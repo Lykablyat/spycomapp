@@ -12,8 +12,8 @@ import { GiftedChat, Bubble, InputToolbar, Send, IMessage, BubbleProps, InputToo
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import {
   initDatabase,
-  insertMessage,
-  getMessages,
+  saveMessage,
+  fetchStoredMessages,
   clearAllMessages,
   setBurnedState,
   deleteMessageById,
@@ -105,7 +105,7 @@ export default function ChatScreen() {
 
         // Load existing history if not a dream room
         if (!isDreamRoom) {
-          const storedMessages = await getMessages();
+          const storedMessages = await fetchStoredMessages();
           setMessages(storedMessages);
         }
 
@@ -160,7 +160,7 @@ export default function ChatScreen() {
             const incomingMsg: IMessage = {
               _id: msgId,
               text: decryptedText,
-              createdAt: new Date(payload.timestamp),
+              createdAt: new Date(payload.createdAt),
               user: {
                 _id: 2,
                 name: payload.senderCallsign,
@@ -171,7 +171,7 @@ export default function ChatScreen() {
 
             // Persist to DB if not Dream Room
             if (!isDreamRoomRef.current) {
-              await insertMessage(msgId, decryptedText, payload.senderCallsign, payload.timestamp, payload.ttl);
+              await saveMessage(incomingMsg);
             }
 
             // Schedule TTL expiration if applicable
@@ -226,7 +226,7 @@ export default function ChatScreen() {
 
       // 1. Write to local database (if not a Dream Room)
       if (!isDreamRoom) {
-        await insertMessage(msgId, msgToSend.text, callsign, timestamp, ttlSeconds > 0 ? ttlSeconds : undefined);
+        await saveMessage(msgToSend);
       }
 
       // If TTL is set, schedule local destruction
@@ -247,7 +247,7 @@ export default function ChatScreen() {
           roomId: derivedRoomId,
           senderCallsign: callsign,
           encrypted,
-          timestamp,
+          createdAt: timestamp,
           ttl: ttlSeconds > 0 ? ttlSeconds : undefined,
         };
 
@@ -417,9 +417,6 @@ export default function ChatScreen() {
             renderBubble={renderBubble}
             renderInputToolbar={renderInputToolbar}
             renderSend={renderSend}
-            alwaysShowSend
-            bottomOffset={Platform.OS === 'ios' ? 0 : 0}
-            maxInputLength={1000}
             textInputProps={{
               style: {
                 color: '#F8FAFC',

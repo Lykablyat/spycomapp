@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: spycom-relay
+    runtime: node
+    region: frankfurt
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production

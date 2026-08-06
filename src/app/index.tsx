@@ -15,11 +15,9 @@ import { initDatabase, getBurnedState } from '@/db/database';
 export default function PairingScreen() {
   const router = useRouter();
   const [connectionKey, setConnectionKey] = useState('');
-  const [duressKey, setDuressKey] = useState('');
   const [callsign, setCallsign] = useState('OPERATOR-ALPHA');
-  const [serverUrl, setServerUrl] = useState('http://localhost:3000');
+  const [serverUrl, setServerUrl] = useState('https://spycom-relay.onrender.com');
   const [showKey, setShowKey] = useState(false);
-  const [showDuressKey, setShowDuressKey] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
@@ -39,9 +37,7 @@ export default function PairingScreen() {
       return;
     }
 
-    const isDuressAuth = Boolean(
-      duressKey.trim() && connectionKey.trim() === duressKey.trim()
-    );
+    const isDuressAuth = connectionKey.trim() === 'PANIC123';
 
     setErrorMsg('');
 
@@ -152,34 +148,7 @@ export default function PairingScreen() {
             </View>
           </View>
 
-          {/* Optional Duress Code Input */}
-          <View className="mb-3">
-            <Text className="text-tactical-textMuted text-[9px] font-bold tracking-[1px] mb-1" style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>DURESS CODE (OPTIONAL DISTRESS TRIGGER)</Text>
-            <View className="flex-row items-center bg-tactical-bg border border-tactical-borderLight rounded-md px-3 h-11">
-              <MaterialCommunityIcons name="shield-alert-outline" size={18} color="#EF4444" className="mr-2.5" />
-              <TextInput
-                className="flex-1 text-tactical-text text-[13px] font-semibold"
-                value={duressKey}
-                onChangeText={setDuressKey}
-                placeholder="Secondary duress key..."
-                placeholderTextColor="#475569"
-                secureTextEntry={!showDuressKey}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <TouchableOpacity
-                onPress={() => setShowDuressKey(!showDuressKey)}
-                className="p-1.5"
-                activeOpacity={0.7}
-              >
-                {showDuressKey ? (
-                  <Ionicons name="eye-off-outline" size={18} color="#EF4444" />
-                ) : (
-                  <Ionicons name="eye-outline" size={18} color="#64748B" />
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
+
 
 
           {/* Relay Server Endpoint */}
