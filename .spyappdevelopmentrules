@@ -1,0 +1,21 @@
+# Project Context: Tactical E2EE Mobile Messenger
+You are building a highly secure, 2-person private messaging app. The aesthetic and functional goal is a tactical, secret-agent style communication tool designed for Milsim and high-privacy scenarios. 
+
+## Core Architecture Constraints
+- **Frontend Stack:** React Native, Expo, NativeWind (Tailwind styling).
+- **UI Components:** Use `react-native-gifted-chat` for the messaging interface.
+- **Local Storage ONLY:** `expo-sqlite` for persistent messages. No cloud databases.
+- **Network Layer:** Stateless Node.js WebSocket (`socket.io`) relay server. The server instantly forwards messages and deletes them. It holds NO persistent data.
+- **Cryptography:** E2EE using AES-256-GCM via `react-native-quick-crypto`. Keys are derived from a user-provided shared password using PBKDF2.
+
+## Tactical Features (To Be Implemented Later)
+1. **Panic Button / Burn Protocol:** Wipes local SQLite database instantly and sends a WebSocket `BURN_NOTICE` to wipe the peer device.
+2. **Decoy UI:** On boot, if `isBurned == true`, the app loads a fully functional Decoy Calculator. Entering a specific math sequence restores the pairing screen.
+3. **Duress Code:** Entering a secondary "fake" password logs the user in but silently triggers a local wipe and sends a distress signal to the peer.
+4. **Dream Room:** A volatile, in-memory chat state. Bypasses SQLite completely. Wiped instantly on exit via garbage collection.
+5. **Self-Destruct (TTL):** Messages disappear from the database X seconds after viewing.
+
+## Execution Directives
+- **DO NOT build everything at once.** Wait for specific instructions to build layer by layer.
+- Ensure the app is fully functional offline before introducing the network relay layer.
+- Commit working code after every major feature using Conventional Commits.
