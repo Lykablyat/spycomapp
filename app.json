@@ -38,7 +38,25 @@
       "expo-font",
       "expo-sqlite",
       "react-native-quick-crypto",
-      "expo-build-properties"
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "packagingOptions": {
+              "pickFirst": [
+                "lib/x86/libcrypto.so",
+                "lib/x86_64/libcrypto.so",
+                "lib/armeabi-v7a/libcrypto.so",
+                "lib/arm64-v8a/libcrypto.so",
+                "lib/x86/libssl.so",
+                "lib/x86_64/libssl.so",
+                "lib/armeabi-v7a/libssl.so",
+                "lib/arm64-v8a/libssl.so"
+              ]
+            }
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
