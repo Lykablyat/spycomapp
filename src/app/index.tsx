@@ -10,7 +10,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { initDatabase, getBurnedState } from '@/db/database';
+import { initDatabase, getBurnedState, getDuressCode, saveDuressCode } from '@/db/database';
 
 export default function PairingScreen() {
   const router = useRouter();
@@ -19,25 +19,37 @@ export default function PairingScreen() {
   const [serverUrl, setServerUrl] = useState('https://spycom-relay.onrender.com');
   const [showKey, setShowKey] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [duressCode, setDuressCode] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   useEffect(() => {
-    async function checkBurnStatus() {
+    async function init() {
       await initDatabase();
       const isBurned = await getBurnedState();
       if (isBurned) {
         router.replace('/decoy');
+        return;
       }
+      // Load previously saved duress code
+      const savedDuress = await getDuressCode();
+      if (savedDuress) setDuressCode(savedDuress);
     }
-    checkBurnStatus();
+    init();
   }, [router]);
 
-  const handleConnect = () => {
+  const handleConnect = async () => {
     if (!connectionKey.trim()) {
       setErrorMsg('CRITICAL ERROR: Connection key cannot be empty');
       return;
     }
 
-    const isDuressAuth = connectionKey.trim() === 'PANIC123';
+    // Check if entered key matches duress code
+    const isDuressAuth = duressCode.trim() !== '' && connectionKey.trim() === duressCode.trim();
+
+    // Persist duress code if set
+    if (duressCode.trim()) {
+      await saveDuressCode(duressCode.trim());
+    }
 
     setErrorMsg('');
 
@@ -103,7 +115,7 @@ export default function PairingScreen() {
           <View className="mb-3">
             <Text className="text-tactical-textMuted text-[9px] font-bold tracking-[1px] mb-1" style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>YOUR CALLSIGN</Text>
             <View className="flex-row items-center bg-tactical-bg border border-tactical-borderLight rounded-md px-3 h-11">
-              <MaterialCommunityIcons name="console" size={18} color="#64748B" className="mr-2.5" />
+              <MaterialCommunityIcons name="console" size={18} color="#64748B" style={{ marginRight: 10 }} />
               <TextInput
                 className="flex-1 text-tactical-text text-[13px] font-semibold"
                 value={callsign}
@@ -120,7 +132,7 @@ export default function PairingScreen() {
           <View className="mb-3">
             <Text className="text-tactical-textMuted text-[9px] font-bold tracking-[1px] mb-1" style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>SHARED CONNECTION KEY (PASSWORD)</Text>
             <View className="flex-row items-center bg-tactical-bg border border-tactical-borderLight rounded-md px-3 h-11">
-              <Ionicons name="key-outline" size={18} color="#00F0FF" className="mr-2.5" />
+              <Ionicons name="key-outline" size={18} color="#00F0FF" style={{ marginRight: 10 }} />
               <TextInput
                 className="flex-1 text-tactical-text text-[13px] font-semibold"
                 value={connectionKey}
@@ -148,14 +160,45 @@ export default function PairingScreen() {
             </View>
           </View>
 
+          {/* Tactical Options Toggle */}
+          <TouchableOpacity
+            onPress={() => setShowAdvanced(!showAdvanced)}
+            className="flex-row items-center justify-center py-1.5 mb-2"
+            activeOpacity={0.7}
+          >
+            <MaterialCommunityIcons name="shield-key-outline" size={12} color="#D97706" />
+            <Text className="text-[#D97706] text-[9px] font-bold tracking-[1px] ml-1.5" style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>
+              TACTICAL OPTIONS {showAdvanced ? '▾' : '▸'}
+            </Text>
+          </TouchableOpacity>
 
-
+          {showAdvanced && (
+            <View className="mb-3">
+              <Text className="text-[#D97706] text-[9px] font-bold tracking-[1px] mb-1" style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>DURESS CODE (OPTIONAL)</Text>
+              <View className="flex-row items-center bg-tactical-bg border border-[#78350F] rounded-md px-3 h-11">
+                <MaterialCommunityIcons name="shield-alert" size={18} color="#D97706" style={{ marginRight: 10 }} />
+                <TextInput
+                  className="flex-1 text-[#FCD34D] text-[13px] font-semibold"
+                  value={duressCode}
+                  onChangeText={setDuressCode}
+                  placeholder="Set duress password..."
+                  placeholderTextColor="#78350F"
+                  secureTextEntry
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+              <Text className="text-[#92400E] text-[8px] mt-1 ml-1" style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>
+                Enter this as your connection key to trigger silent wipe + distress signal
+              </Text>
+            </View>
+          )}
 
           {/* Relay Server Endpoint */}
           <View className="mb-3">
             <Text className="text-tactical-textMuted text-[9px] font-bold tracking-[1px] mb-1" style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>RELAY SERVER ENDPOINT</Text>
             <View className="flex-row items-center bg-tactical-bg border border-tactical-borderLight rounded-md px-3 h-11">
-              <MaterialCommunityIcons name="server-network" size={18} color="#00FF66" className="mr-2.5" />
+              <MaterialCommunityIcons name="server-network" size={18} color="#00FF66" style={{ marginRight: 10 }} />
               <TextInput
                 className="flex-1 text-tactical-text text-[13px] font-semibold"
                 value={serverUrl}

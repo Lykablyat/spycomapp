@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "spycomapp",
+    "name": "SpyCom",
     "slug": "spycomapp",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -8,7 +8,8 @@
     "scheme": "spycomapp",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/expo.icon",
+      "bundleIdentifier": "com.ledger.spycomapp"
     },
     "android": {
       "adaptiveIcon": {
@@ -19,7 +20,7 @@
       },
       "predictiveBackGestureEnabled": false,
       "softwareKeyboardLayoutMode": "resize",
-      "package": "com.anonymous.spycomapp"
+      "package": "com.ledger.spycomapp"
     },
     "web": {
       "output": "static",
@@ -53,6 +54,25 @@
                 "lib/armeabi-v7a/libssl.so",
                 "lib/arm64-v8a/libssl.so"
               ]
+            }
+          }
+        }
+      ],
+      [
+        "@howincodes/expo-dynamic-app-icon",
+        {
+          "default": {
+            "android": {
+              "foregroundImage": "./assets/images/icon-spycom.png",
+              "backgroundColor": "#080C14",
+              "label": "SpyCom"
+            }
+          },
+          "calculator": {
+            "android": {
+              "foregroundImage": "./assets/images/icon-calculator.png",
+              "backgroundColor": "#FFFFFF",
+              "label": "Calculator"
             }
           }
         }

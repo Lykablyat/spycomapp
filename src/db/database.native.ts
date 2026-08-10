@@ -123,3 +123,28 @@ export async function setBurnedState(burned: boolean): Promise<void> {
   }
 }
 
+export async function getDuressCode(): Promise<string | null> {
+  try {
+    const db = await getDatabase();
+    const row = (await db.getFirstAsync(
+      "SELECT value FROM app_config WHERE key = 'duressCode';"
+    )) as { value: string } | null;
+    return row ? row.value : null;
+  } catch (error) {
+    console.error('Failed to read duress code from SQLite:', error);
+    return null;
+  }
+}
+
+export async function saveDuressCode(code: string): Promise<void> {
+  try {
+    const db = await getDatabase();
+    await db.runAsync(
+      "INSERT OR REPLACE INTO app_config (key, value) VALUES ('duressCode', ?);",
+      [code]
+    );
+  } catch (error) {
+    console.error('Failed to save duress code to SQLite:', error);
+  }
+}
+

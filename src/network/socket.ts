@@ -7,7 +7,7 @@ export interface NetworkMessagePayload {
   senderCallsign: string;
   encrypted: EncryptedPayload;
   createdAt: number;
-  ttl?: number;
+  viewOnce?: boolean;
   isDream?: boolean;
 }
 

@@ -80,4 +80,20 @@ export async function setBurnedState(burned: boolean): Promise<void> {
   }
 }
 
+export async function getDuressCode(): Promise<string | null> {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return null;
+    return window.localStorage.getItem('tactical_messenger_duress_code');
+  } catch (error) {
+    return null;
+  }
+}
 
+export async function saveDuressCode(code: string): Promise<void> {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    window.localStorage.setItem('tactical_messenger_duress_code', code);
+  } catch (error) {
+    console.error('Failed to save duress code in web localStorage:', error);
+  }
+}

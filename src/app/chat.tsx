@@ -5,6 +5,7 @@ import {
   TouchableOpacity,
   KeyboardAvoidingView,
   Platform,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -16,10 +17,10 @@ import {
   fetchStoredMessages,
   clearAllMessages,
   setBurnedState,
-  deleteMessageById,
 } from '@/db/database';
 import { encryptMessage, decryptMessage, hashRoomKey } from '@/crypto/encryption';
 import { connectSocket, disconnectSocket, getSocket, NetworkMessagePayload } from '@/network/socket';
+import { setAppIcon } from '@howincodes/expo-dynamic-app-icon';
 
 export default function ChatScreen() {
   const router = useRouter();
@@ -41,40 +42,24 @@ export default function ChatScreen() {
   const [isConnected, setIsConnected] = useState(false);
   const [peerCallsign, setPeerCallsign] = useState<string | null>(null);
   const [duressAlertReceived, setDuressAlertReceived] = useState(false);
-  
+
   // Tactical options
-  const [ttlSeconds, setTtlSeconds] = useState<number>(0);
   const [isDreamRoom, setIsDreamRoom] = useState<boolean>(false);
+  const [isViewOnce, setIsViewOnce] = useState(false);
+  const [revealedMessage, setRevealedMessage] = useState<{
+    id: string; text: string; sender: string;
+  } | null>(null);
 
   // Keep refs for active configuration
   const isDreamRoomRef = useRef(isDreamRoom);
   isDreamRoomRef.current = isDreamRoom;
 
-  // Active TTL self-destruct timers dictionary to clear timeouts on cleanup
-  const activeTimersRef = useRef<{ [msgId: string]: ReturnType<typeof setTimeout> }>({});
-
-  // Helper to schedule message self-destruction
-  const scheduleSelfDestruct = useCallback((msgId: string, seconds?: number) => {
-    if (!seconds || seconds <= 0) return;
-
-    console.log(`[DEV_ONLY][TTL] Scheduling self-destruct for message ${msgId} in ${seconds}s`);
-
-    const timer = setTimeout(async () => {
-      console.log(`[DEV_ONLY][TTL] Expiring message ${msgId} now!`);
-
-      // Remove from UI state
-      setMessages((prev) => prev.filter((m) => String(m._id) !== String(msgId)));
-
-      // Remove from SQLite
-      if (!isDreamRoomRef.current) {
-        await deleteMessageById(msgId);
-      }
-      
-      delete activeTimersRef.current[msgId];
-    }, seconds * 1000);
-
-    activeTimersRef.current[msgId] = timer;
-  }, []);
+  // View Once data store: msgId → { originalText, senderCallsign, isOwn }
+  const viewOnceDataRef = useRef<Record<string, {
+    originalText: string;
+    senderCallsign: string;
+    isOwn: boolean;
+  }>>({});
 
   // Update refs when props change
   useEffect(() => {
@@ -89,6 +74,11 @@ export default function ChatScreen() {
       (async () => {
         await clearAllMessages();
         setMessages([]);
+        try {
+          await setAppIcon('calculator');
+        } catch (e) {
+          console.error('Failed to set disguise app icon', e);
+        }
       })();
     }
   }, [isDuressAuth]);
@@ -116,7 +106,7 @@ export default function ChatScreen() {
 
         // Connect socket
         activeSocket = connectSocket(serverUrl);
-        
+
         const handleConnect = () => {
           setIsConnected(true);
           console.log(`[DEV_ONLY][CLIENT] Socket connected (${activeSocket?.id})! Joining room ${derivedRoomId} as ${callsign}`);
@@ -132,6 +122,8 @@ export default function ChatScreen() {
         if (activeSocket.connected) {
           handleConnect();
         }
+
+        activeSocket?.on('connect', handleConnect);
 
         activeSocket?.on('disconnect', () => {
           console.log('[DEV_ONLY][CLIENT] Socket disconnected');
@@ -155,8 +147,28 @@ export default function ChatScreen() {
 
           try {
             const decryptedText = await decryptMessage(payload.encrypted, connectionKeyRef.current);
-
             const msgId = payload.id || String(Date.now());
+
+            // Handle View Once messages — store in memory only, never persisted
+            if (payload.viewOnce) {
+              viewOnceDataRef.current[msgId] = {
+                originalText: decryptedText,
+                senderCallsign: payload.senderCallsign,
+                isOwn: false,
+              };
+
+              const sealedMsg: IMessage = {
+                _id: msgId,
+                text: '🔒 CLASSIFIED INTEL',
+                createdAt: new Date(payload.createdAt),
+                user: { _id: 2, name: payload.senderCallsign },
+              };
+              setMessages((prev) => GiftedChat.append(prev, [sealedMsg]));
+              // View Once received messages are NEVER persisted to SQLite
+              return;
+            }
+
+            // Normal message
             const incomingMsg: IMessage = {
               _id: msgId,
               text: decryptedText,
@@ -173,11 +185,6 @@ export default function ChatScreen() {
             if (!isDreamRoomRef.current) {
               await saveMessage(incomingMsg);
             }
-
-            // Schedule TTL expiration if applicable
-            if (payload.ttl && payload.ttl > 0) {
-              scheduleSelfDestruct(msgId, payload.ttl);
-            }
           } catch (err) {
             console.error('[DEV_ONLY] Failed decrypting incoming socket message:', err);
           }
@@ -192,6 +199,11 @@ export default function ChatScreen() {
         // Listen for burn notice from peer
         activeSocket?.on('burn_notice', async () => {
           console.log('[DEV_ONLY][CLIENT] BURN NOTICE received! Wiping local storage...');
+          try {
+            await setAppIcon('calculator');
+          } catch (e) {
+            console.error('Failed to set disguise app icon', e);
+          }
           await setBurnedState(true);
           await clearAllMessages();
           setMessages([]);
@@ -208,33 +220,68 @@ export default function ChatScreen() {
       if (activeSocket) {
         activeSocket.removeAllListeners();
       }
+      disconnectSocket();
     };
-  }, [callsign, connectionKey, serverUrl, isDuressAuth, scheduleSelfDestruct]);
+  }, [callsign, connectionKey, serverUrl, isDuressAuth]);
+
+  // View Once handlers
+  const handleRevealViewOnce = useCallback((msgId: string) => {
+    const data = viewOnceDataRef.current[msgId];
+    if (data && !data.isOwn) {
+      setRevealedMessage({ id: msgId, text: data.originalText, sender: data.senderCallsign });
+    }
+  }, []);
+
+  const handleBurnViewOnce = useCallback((msgId: string) => {
+    // Remove from messages state
+    setMessages((prev) => prev.filter((m) => String(m._id) !== msgId));
+    // Remove from viewOnce data
+    delete viewOnceDataRef.current[msgId];
+    // Close modal
+    setRevealedMessage(null);
+    // No SQLite deletion needed — view-once received messages were never persisted
+  }, []);
 
   const onSend = useCallback(
     async (newMessages: IMessage[] = []) => {
       const msgToSend = newMessages[0];
       if (!msgToSend) return;
 
-      console.log(`[DEV_ONLY][CLIENT] Sending encrypted message (Dream=${isDreamRoom}, TTL=${ttlSeconds}s)`);
-
-      // Append locally
-      setMessages((previousMessages) => GiftedChat.append(previousMessages, newMessages));
-
       const msgId = String(msgToSend._id);
       const timestamp = new Date(msgToSend.createdAt).getTime();
+      const sendingViewOnce = isViewOnce;
 
-      // 1. Write to local database (if not a Dream Room)
-      if (!isDreamRoom) {
-        await saveMessage(msgToSend);
+      console.log(`[DEV_ONLY][CLIENT] Sending encrypted message (Dream=${isDreamRoom}, ViewOnce=${sendingViewOnce})`);
+
+      if (sendingViewOnce) {
+        // Store in viewOnce map so sender sees a special bubble
+        viewOnceDataRef.current[msgId] = {
+          originalText: msgToSend.text,
+          senderCallsign: callsign,
+          isOwn: true,
+        };
+
+        // Append placeholder to local UI (sender can never re-read)
+        const placeholderMsg: IMessage = {
+          ...msgToSend,
+          text: '📨 ONE-TIME LETTER SENT',
+        };
+        setMessages((prev) => GiftedChat.append(prev, [placeholderMsg]));
+
+        // Persist placeholder (not real text) to SQLite
+        if (!isDreamRoom) {
+          await saveMessage(placeholderMsg);
+        }
+      } else {
+        // Normal message flow
+        setMessages((prev) => GiftedChat.append(prev, newMessages));
+
+        if (!isDreamRoom) {
+          await saveMessage(msgToSend);
+        }
       }
 
-      // If TTL is set, schedule local destruction
-      if (ttlSeconds > 0) {
-        scheduleSelfDestruct(msgId, ttlSeconds);
-      }
-
-      // 2. Encrypt & transmit over Socket.IO relay
+      // Encrypt the REAL text and transmit over Socket.IO relay
       try {
         const encrypted = await encryptMessage(msgToSend.text, connectionKey);
         const socket = getSocket() || connectSocket(serverUrl);
@@ -248,7 +295,7 @@ export default function ChatScreen() {
           senderCallsign: callsign,
           encrypted,
           createdAt: timestamp,
-          ttl: ttlSeconds > 0 ? ttlSeconds : undefined,
+          viewOnce: sendingViewOnce || undefined,
         };
 
         socket.emit('send_message', networkPayload);
@@ -256,7 +303,7 @@ export default function ChatScreen() {
         console.error('[DEV_ONLY] Failed encrypting/emitting message:', err);
       }
     },
-    [callsign, connectionKey, roomId, serverUrl, isDreamRoom, ttlSeconds, scheduleSelfDestruct]
+    [callsign, connectionKey, roomId, serverUrl, isDreamRoom, isViewOnce]
   );
 
   const handlePanicPress = async () => {
@@ -268,12 +315,87 @@ export default function ChatScreen() {
       console.error('[DEV_ONLY] Failed emitting burn notice:', err);
     }
 
+    try {
+      await setAppIcon('calculator');
+    } catch (e) {
+      console.error('Failed to set disguise app icon', e);
+    }
     await setBurnedState(true);
     await clearAllMessages();
     router.replace('/decoy');
   };
 
   const renderBubble = (props: BubbleProps<IMessage>) => {
+    const msgId = String(props.currentMessage?._id);
+    const viewOnceInfo = viewOnceDataRef.current[msgId];
+
+    // Received view-once message — sealed letter card (tap to reveal)
+    if (viewOnceInfo && !viewOnceInfo.isOwn) {
+      return (
+        <TouchableOpacity
+          onPress={() => handleRevealViewOnce(msgId)}
+          activeOpacity={0.7}
+          style={{ marginBottom: 8, marginLeft: 8, maxWidth: '75%' }}
+        >
+          <View style={{
+            backgroundColor: '#1A0A2E',
+            borderWidth: 1.5,
+            borderColor: '#F59E0B',
+            borderStyle: 'dashed',
+            borderRadius: 12,
+            padding: 16,
+            alignItems: 'center',
+            gap: 6,
+          }}>
+            <Ionicons name="lock-closed" size={24} color="#F59E0B" />
+            <Text style={{
+              color: '#F59E0B',
+              fontSize: 11,
+              fontWeight: '900',
+              letterSpacing: 2,
+              fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+            }}>CLASSIFIED INTEL</Text>
+            <Text style={{
+              color: '#D97706',
+              fontSize: 9,
+              fontWeight: '700',
+              letterSpacing: 1,
+              fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+            }}>TAP TO REVEAL</Text>
+          </View>
+        </TouchableOpacity>
+      );
+    }
+
+    // Sent view-once message — letter sent indicator
+    if (viewOnceInfo && viewOnceInfo.isOwn) {
+      return (
+        <View style={{ marginBottom: 8, marginRight: 8, maxWidth: '75%' }}>
+          <View style={{
+            backgroundColor: '#1C1917',
+            borderWidth: 1,
+            borderColor: '#78716C',
+            borderRadius: 12,
+            padding: 14,
+            alignItems: 'center',
+            gap: 4,
+            flexDirection: 'row',
+          }}>
+            <Ionicons name="mail-outline" size={18} color="#A8A29E" />
+            <Text style={{
+              color: '#A8A29E',
+              fontSize: 10,
+              fontWeight: '800',
+              letterSpacing: 1.5,
+              marginLeft: 6,
+              fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+            }}>ONE-TIME LETTER SENT</Text>
+          </View>
+        </View>
+      );
+    }
+
+    // Normal message bubble
     return (
       <Bubble
         {...props}
@@ -318,8 +440,20 @@ export default function ChatScreen() {
   const renderSend = (props: SendProps<IMessage>) => {
     return (
       <Send {...props} containerStyle={{ justifyContent: 'center', paddingHorizontal: 8 }}>
-        <View className={`w-9 h-9 rounded-full justify-center items-center ${isDreamRoom ? 'bg-[#C084FC]' : 'bg-tactical-cyan'}`}>
-          <Ionicons name="send" size={16} color={isDreamRoom ? '#FFFFFF' : '#080C14'} style={{ marginLeft: 2 }} />
+        <View style={{
+          width: 36,
+          height: 36,
+          borderRadius: 18,
+          justifyContent: 'center',
+          alignItems: 'center',
+          backgroundColor: isViewOnce ? '#F59E0B' : isDreamRoom ? '#C084FC' : '#00F0FF',
+        }}>
+          <Ionicons
+            name={isViewOnce ? 'mail' : 'send'}
+            size={16}
+            color={isViewOnce ? '#1C1917' : isDreamRoom ? '#FFFFFF' : '#080C14'}
+            style={{ marginLeft: isViewOnce ? 0 : 2 }}
+          />
         </View>
       </Send>
     );
@@ -351,33 +485,58 @@ export default function ChatScreen() {
           </View>
 
           <View className="flex-row items-center gap-3">
-            {/* TTL Toggle */}
+            {/* View Once Toggle */}
             <TouchableOpacity
-              onPress={() => setTtlSeconds(prev => prev === 0 ? 30 : prev === 30 ? 60 : 0)}
-              className={`flex-row items-center px-2 py-1 rounded-md border ${ttlSeconds > 0 ? 'bg-[#450A0A] border-tactical-red' : 'bg-tactical-card border-tactical-borderLight'}`}
+              onPress={() => setIsViewOnce(!isViewOnce)}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                paddingHorizontal: 8,
+                paddingVertical: 4,
+                borderRadius: 6,
+                borderWidth: 1,
+                backgroundColor: isViewOnce ? '#451A03' : '#0F172A',
+                borderColor: isViewOnce ? '#F59E0B' : '#334155',
+              }}
             >
-              <MaterialCommunityIcons 
-                name="timer-sand" 
-                size={14} 
-                color={ttlSeconds > 0 ? '#EF4444' : '#94A3B8'} 
+              <Ionicons
+                name={isViewOnce ? 'mail' : 'mail-outline'}
+                size={14}
+                color={isViewOnce ? '#F59E0B' : '#94A3B8'}
               />
-              {ttlSeconds > 0 && (
-                <Text className="text-tactical-red text-[10px] font-bold ml-1">{ttlSeconds}s</Text>
+              {isViewOnce && (
+                <Text style={{
+                  color: '#F59E0B',
+                  fontSize: 9,
+                  fontWeight: '800',
+                  marginLeft: 4,
+                  letterSpacing: 0.5,
+                  fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+                }}>1x</Text>
               )}
             </TouchableOpacity>
 
             {/* Dream Room Toggle */}
             <TouchableOpacity
               onPress={() => {
-                setIsDreamRoom(!isDreamRoom);
-                if (!isDreamRoom) setMessages([]);
+                if (isDreamRoom) {
+                  // Exiting Dream Room — wipe volatile state, reload from SQLite
+                  setIsDreamRoom(false);
+                  viewOnceDataRef.current = {};
+                  fetchStoredMessages().then(setMessages);
+                } else {
+                  // Entering Dream Room — clear view, go volatile
+                  setIsDreamRoom(true);
+                  viewOnceDataRef.current = {};
+                  setMessages([]);
+                }
               }}
               className={`p-1.5 rounded-md border ${isDreamRoom ? 'bg-[#3B0764] border-[#C084FC]' : 'bg-tactical-card border-tactical-borderLight'}`}
             >
-              <Ionicons 
-                name={isDreamRoom ? 'cloudy-night' : 'cloud-outline'} 
-                size={18} 
-                color={isDreamRoom ? '#C084FC' : '#94A3B8'} 
+              <Ionicons
+                name={isDreamRoom ? 'cloudy-night' : 'cloud-outline'}
+                size={18}
+                color={isDreamRoom ? '#C084FC' : '#94A3B8'}
               />
             </TouchableOpacity>
 
@@ -400,13 +559,37 @@ export default function ChatScreen() {
             </Text>
           </View>
         )}
-        
+
         {peerCallsign && !duressAlertReceived && (
            <View className="bg-tactical-card py-1.5 px-4 border-b border-tactical-border flex-row items-center justify-center gap-2">
              <Text className="text-tactical-textMuted text-[9px] font-bold tracking-widest text-center" style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>
                PEER IN ROOM: {peerCallsign}
              </Text>
            </View>
+        )}
+
+        {/* View Once active indicator banner */}
+        {isViewOnce && (
+          <View style={{
+            backgroundColor: '#451A03',
+            borderBottomWidth: 1,
+            borderBottomColor: '#F59E0B',
+            paddingVertical: 6,
+            paddingHorizontal: 16,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 6,
+          }}>
+            <Ionicons name="mail" size={12} color="#F59E0B" />
+            <Text style={{
+              color: '#F59E0B',
+              fontSize: 9,
+              fontWeight: '900',
+              letterSpacing: 1.5,
+              fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+            }}>VIEW ONCE — NEXT MESSAGE IS A ONE-TIME LETTER</Text>
+          </View>
         )}
 
         <View className="flex-1 px-1">
@@ -429,6 +612,102 @@ export default function ChatScreen() {
             }}
           />
         </View>
+
+        {/* View Once Reveal Modal */}
+        <Modal
+          visible={revealedMessage !== null}
+          transparent
+          animationType="fade"
+          onRequestClose={() => revealedMessage && handleBurnViewOnce(revealedMessage.id)}
+        >
+          <View style={{
+            flex: 1,
+            backgroundColor: 'rgba(0,0,0,0.85)',
+            justifyContent: 'center',
+            alignItems: 'center',
+            padding: 24,
+          }}>
+            <View style={{
+              backgroundColor: '#0F172A',
+              borderWidth: 1.5,
+              borderColor: '#F59E0B',
+              borderRadius: 16,
+              padding: 24,
+              width: '100%',
+              maxWidth: 360,
+              gap: 16,
+            }}>
+              {/* Modal Header */}
+              <View style={{ alignItems: 'center', gap: 8 }}>
+                <Ionicons name="lock-open" size={28} color="#F59E0B" />
+                <Text style={{
+                  color: '#F59E0B',
+                  fontSize: 11,
+                  fontWeight: '900',
+                  letterSpacing: 2,
+                  fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+                }}>CLASSIFIED INTEL</Text>
+                <Text style={{
+                  color: '#94A3B8',
+                  fontSize: 9,
+                  fontWeight: '700',
+                  letterSpacing: 1,
+                  fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+                }}>FROM: {revealedMessage?.sender || 'UNKNOWN'}</Text>
+              </View>
+
+              {/* Decrypted Message Content */}
+              <View style={{
+                backgroundColor: '#1E293B',
+                borderRadius: 8,
+                padding: 16,
+                borderWidth: 1,
+                borderColor: '#334155',
+              }}>
+                <Text style={{
+                  color: '#F8FAFC',
+                  fontSize: 16,
+                  lineHeight: 24,
+                  fontWeight: '500',
+                }}>{revealedMessage?.text}</Text>
+              </View>
+
+              {/* Destruction Warning */}
+              <Text style={{
+                color: '#EF4444',
+                fontSize: 8,
+                fontWeight: '800',
+                letterSpacing: 1,
+                textAlign: 'center',
+                fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+              }}>⚠ THIS MESSAGE WILL BE DESTROYED ON CLOSE</Text>
+
+              {/* Burn & Close Button */}
+              <TouchableOpacity
+                onPress={() => revealedMessage && handleBurnViewOnce(revealedMessage.id)}
+                activeOpacity={0.8}
+                style={{
+                  backgroundColor: '#DC2626',
+                  borderRadius: 8,
+                  paddingVertical: 14,
+                  alignItems: 'center',
+                  flexDirection: 'row',
+                  justifyContent: 'center',
+                  gap: 8,
+                }}
+              >
+                <MaterialCommunityIcons name="fire" size={18} color="#FFFFFF" />
+                <Text style={{
+                  color: '#FFFFFF',
+                  fontSize: 12,
+                  fontWeight: '900',
+                  letterSpacing: 1.5,
+                  fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+                }}>BURN & CLOSE</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
