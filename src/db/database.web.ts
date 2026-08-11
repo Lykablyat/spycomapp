@@ -7,10 +7,10 @@ export async function initDatabase(): Promise<void> {
   return;
 }
 
-export async function fetchStoredMessages(): Promise<IMessage[]> {
+export async function fetchStoredMessages(roomId: string): Promise<IMessage[]> {
   try {
     if (typeof window === 'undefined' || !window.localStorage) return [];
-    const data = window.localStorage.getItem(STORAGE_KEY);
+    const data = window.localStorage.getItem(`${STORAGE_KEY}_${roomId}`);
     if (!data) return [];
     const parsed = JSON.parse(data);
     return parsed.map((item: IMessage & { createdAt: string | number }) => ({
@@ -23,10 +23,10 @@ export async function fetchStoredMessages(): Promise<IMessage[]> {
   }
 }
 
-export async function saveMessage(message: IMessage): Promise<void> {
+export async function saveMessage(message: IMessage, roomId: string): Promise<void> {
   try {
     if (typeof window === 'undefined' || !window.localStorage) return;
-    const currentMessages = await fetchStoredMessages();
+    const currentMessages = await fetchStoredMessages(roomId);
     // Check if message already exists
     const exists = currentMessages.some((m) => String(m._id) === String(message._id));
     let updated: IMessage[];
@@ -35,7 +35,7 @@ export async function saveMessage(message: IMessage): Promise<void> {
     } else {
       updated = [message, ...currentMessages];
     }
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    window.localStorage.setItem(`${STORAGE_KEY}_${roomId}`, JSON.stringify(updated));
   } catch (error) {
     console.error('Failed to save message to web localStorage:', error);
   }

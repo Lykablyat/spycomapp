@@ -16,11 +16,8 @@ export default function PairingScreen() {
   const router = useRouter();
   const [connectionKey, setConnectionKey] = useState('');
   const [callsign, setCallsign] = useState('OPERATOR-ALPHA');
-  const [serverUrl, setServerUrl] = useState('https://spycom-relay.onrender.com');
   const [showKey, setShowKey] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
-  const [duressCode, setDuressCode] = useState('');
-  const [showAdvanced, setShowAdvanced] = useState(false);
 
   useEffect(() => {
     async function init() {
@@ -30,10 +27,7 @@ export default function PairingScreen() {
         router.replace('/decoy');
         return;
       }
-      // Load previously saved duress code
-      const savedDuress = await getDuressCode();
-      if (savedDuress) setDuressCode(savedDuress);
-    }
+      }
     init();
   }, [router]);
 
@@ -43,13 +37,8 @@ export default function PairingScreen() {
       return;
     }
 
-    // Check if entered key matches duress code
-    const isDuressAuth = duressCode.trim() !== '' && connectionKey.trim() === duressCode.trim();
-
-    // Persist duress code if set
-    if (duressCode.trim()) {
-      await saveDuressCode(duressCode.trim());
-    }
+    // Check if entered key matches hardcoded duress code
+    const isDuressAuth = connectionKey.trim() === 'vaticancameos';
 
     setErrorMsg('');
 
@@ -58,7 +47,7 @@ export default function PairingScreen() {
       params: {
         callsign: callsign.trim() || 'OPERATOR-ALPHA',
         connectionKey: connectionKey.trim(),
-        serverUrl: serverUrl.trim() || 'http://localhost:3000',
+        serverUrl: 'https://spycom-relay.onrender.com',
         isDuress: isDuressAuth ? 'true' : 'false',
       },
     });
@@ -160,56 +149,7 @@ export default function PairingScreen() {
             </View>
           </View>
 
-          {/* Tactical Options Toggle */}
-          <TouchableOpacity
-            onPress={() => setShowAdvanced(!showAdvanced)}
-            className="flex-row items-center justify-center py-1.5 mb-2"
-            activeOpacity={0.7}
-          >
-            <MaterialCommunityIcons name="shield-key-outline" size={12} color="#D97706" />
-            <Text className="text-[#D97706] text-[9px] font-bold tracking-[1px] ml-1.5" style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>
-              TACTICAL OPTIONS {showAdvanced ? '▾' : '▸'}
-            </Text>
-          </TouchableOpacity>
 
-          {showAdvanced && (
-            <View className="mb-3">
-              <Text className="text-[#D97706] text-[9px] font-bold tracking-[1px] mb-1" style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>DURESS CODE (OPTIONAL)</Text>
-              <View className="flex-row items-center bg-tactical-bg border border-[#78350F] rounded-md px-3 h-11">
-                <MaterialCommunityIcons name="shield-alert" size={18} color="#D97706" style={{ marginRight: 10 }} />
-                <TextInput
-                  className="flex-1 text-[#FCD34D] text-[13px] font-semibold"
-                  value={duressCode}
-                  onChangeText={setDuressCode}
-                  placeholder="Set duress password..."
-                  placeholderTextColor="#78350F"
-                  secureTextEntry
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-              </View>
-              <Text className="text-[#92400E] text-[8px] mt-1 ml-1" style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>
-                Enter this as your connection key to trigger silent wipe + distress signal
-              </Text>
-            </View>
-          )}
-
-          {/* Relay Server Endpoint */}
-          <View className="mb-3">
-            <Text className="text-tactical-textMuted text-[9px] font-bold tracking-[1px] mb-1" style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>RELAY SERVER ENDPOINT</Text>
-            <View className="flex-row items-center bg-tactical-bg border border-tactical-borderLight rounded-md px-3 h-11">
-              <MaterialCommunityIcons name="server-network" size={18} color="#00FF66" style={{ marginRight: 10 }} />
-              <TextInput
-                className="flex-1 text-tactical-text text-[13px] font-semibold"
-                value={serverUrl}
-                onChangeText={setServerUrl}
-                placeholder="http://localhost:3000"
-                placeholderTextColor="#475569"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-            </View>
-          </View>
 
           {/* Error Notice */}
           {errorMsg ? (

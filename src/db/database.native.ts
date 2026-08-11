@@ -24,12 +24,13 @@ export async function initDatabase(): Promise<void> {
   const db = await getDatabase();
   await db.execAsync(`
     PRAGMA journal_mode = WAL;
-    CREATE TABLE IF NOT EXISTS messages (
+    CREATE TABLE IF NOT EXISTS chat_messages (
       id TEXT PRIMARY KEY NOT NULL,
       text TEXT NOT NULL,
       createdAt INTEGER NOT NULL,
       userId INTEGER NOT NULL,
-      userName TEXT NOT NULL
+      userName TEXT NOT NULL,
+      roomId TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS app_config (
       key TEXT PRIMARY KEY NOT NULL,
@@ -38,10 +39,10 @@ export async function initDatabase(): Promise<void> {
   `);
 }
 
-export async function fetchStoredMessages(): Promise<IMessage[]> {
+export async function fetchStoredMessages(roomId: string): Promise<IMessage[]> {
   try {
     const db = await getDatabase();
-    const rows = (await db.getAllAsync('SELECT * FROM messages ORDER BY createdAt DESC;')) as MessageRow[];
+    const rows = (await db.getAllAsync('SELECT * FROM chat_messages WHERE roomId = ? ORDER BY createdAt DESC;', [roomId])) as MessageRow[];
 
     return rows.map((row: MessageRow) => ({
       _id: row.id,
@@ -58,7 +59,7 @@ export async function fetchStoredMessages(): Promise<IMessage[]> {
   }
 }
 
-export async function saveMessage(message: IMessage): Promise<void> {
+export async function saveMessage(message: IMessage, roomId: string): Promise<void> {
   try {
     const db = await getDatabase();
     const msgId = String(message._id);
@@ -71,8 +72,8 @@ export async function saveMessage(message: IMessage): Promise<void> {
     const userName = message.user.name || 'OPERATOR';
 
     await db.runAsync(
-      `INSERT OR REPLACE INTO messages (id, text, createdAt, userId, userName) VALUES (?, ?, ?, ?, ?);`,
-      [msgId, message.text, createdAtTime, userId, userName]
+      `INSERT OR REPLACE INTO chat_messages (id, text, createdAt, userId, userName, roomId) VALUES (?, ?, ?, ?, ?, ?);`,
+      [msgId, message.text, createdAtTime, userId, userName, roomId]
     );
   } catch (error) {
     console.error('Failed to save message to SQLite database:', error);
@@ -82,7 +83,7 @@ export async function saveMessage(message: IMessage): Promise<void> {
 export async function clearAllMessages(): Promise<void> {
   try {
     const db = await getDatabase();
-    await db.runAsync('DELETE FROM messages;');
+    await db.runAsync('DELETE FROM chat_messages;');
   } catch (error) {
     console.error('Failed to clear SQLite messages:', error);
   }
@@ -91,7 +92,7 @@ export async function clearAllMessages(): Promise<void> {
 export async function deleteMessageById(id: string): Promise<void> {
   try {
     const db = await getDatabase();
-    await db.runAsync('DELETE FROM messages WHERE id = ?;', [String(id)]);
+    await db.runAsync('DELETE FROM chat_messages WHERE id = ?;', [String(id)]);
   } catch (error) {
     console.error('Failed to delete message from SQLite database:', error);
   }

@@ -93,14 +93,14 @@ export default function ChatScreen() {
       try {
         await initDatabase();
 
-        // Load existing history if not a dream room
-        if (!isDreamRoom) {
-          const storedMessages = await fetchStoredMessages();
-          setMessages(storedMessages);
-        }
-
         const derivedRoomId = await hashRoomKey(connectionKey);
         setRoomId(derivedRoomId);
+
+        // Load existing history if not a dream room
+        if (!isDreamRoom) {
+          const storedMessages = await fetchStoredMessages(derivedRoomId);
+          setMessages(storedMessages);
+        }
 
         console.log(`[DEV_ONLY][CLIENT] Init chat network with serverUrl=${serverUrl}, room=${derivedRoomId}`);
 
@@ -183,7 +183,7 @@ export default function ChatScreen() {
 
             // Persist to DB if not Dream Room
             if (!isDreamRoomRef.current) {
-              await saveMessage(incomingMsg);
+              await saveMessage(incomingMsg, roomId || derivedRoomId);
             }
           } catch (err) {
             console.error('[DEV_ONLY] Failed decrypting incoming socket message:', err);
@@ -270,14 +270,14 @@ export default function ChatScreen() {
 
         // Persist placeholder (not real text) to SQLite
         if (!isDreamRoom) {
-          await saveMessage(placeholderMsg);
+          await saveMessage(placeholderMsg, roomId || (await hashRoomKey(connectionKey)));
         }
       } else {
         // Normal message flow
         setMessages((prev) => GiftedChat.append(prev, newMessages));
 
         if (!isDreamRoom) {
-          await saveMessage(msgToSend);
+          await saveMessage(msgToSend, roomId || (await hashRoomKey(connectionKey)));
         }
       }
 
@@ -523,7 +523,9 @@ export default function ChatScreen() {
                   // Exiting Dream Room — wipe volatile state, reload from SQLite
                   setIsDreamRoom(false);
                   viewOnceDataRef.current = {};
-                  fetchStoredMessages().then(setMessages);
+                  const curRoomId = roomId || connectionKey; // Since roomId is derived async, we might not have it strictly synchronously here but it's set in state.
+                  // Actually fetchStoredMessages is async
+                  hashRoomKey(connectionKey).then(rId => fetchStoredMessages(rId).then(setMessages));
                 } else {
                   // Entering Dream Room — clear view, go volatile
                   setIsDreamRoom(true);
