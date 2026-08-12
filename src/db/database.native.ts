@@ -32,6 +32,11 @@ export async function initDatabase(): Promise<void> {
       userName TEXT NOT NULL,
       roomId TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS queued_messages (
+      id TEXT PRIMARY KEY NOT NULL,
+      roomId TEXT NOT NULL,
+      payload TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS app_config (
       key TEXT PRIMARY KEY NOT NULL,
       value TEXT NOT NULL
@@ -84,6 +89,7 @@ export async function clearAllMessages(): Promise<void> {
   try {
     const db = await getDatabase();
     await db.runAsync('DELETE FROM chat_messages;');
+    await db.runAsync('DELETE FROM queued_messages;');
   } catch (error) {
     console.error('Failed to clear SQLite messages:', error);
   }
@@ -98,6 +104,41 @@ export async function deleteMessageById(id: string): Promise<void> {
   }
 }
 
+// --- QUEUED MESSAGES ---
+
+export async function enqueueMessage(roomId: string, messageId: string, payloadStr: string): Promise<void> {
+  try {
+    const db = await getDatabase();
+    await db.runAsync(
+      `INSERT OR REPLACE INTO queued_messages (id, roomId, payload) VALUES (?, ?, ?);`,
+      [messageId, roomId, payloadStr]
+    );
+  } catch (error) {
+    console.error('Failed to enqueue message to SQLite database:', error);
+  }
+}
+
+export async function getQueuedMessages(roomId: string): Promise<{ id: string, payloadStr: string }[]> {
+  try {
+    const db = await getDatabase();
+    const rows = (await db.getAllAsync('SELECT id, payload as payloadStr FROM queued_messages WHERE roomId = ?;', [roomId])) as { id: string, payloadStr: string }[];
+    return rows;
+  } catch (error) {
+    console.error('Failed to get queued messages from SQLite database:', error);
+    return [];
+  }
+}
+
+export async function deleteQueuedMessage(id: string): Promise<void> {
+  try {
+    const db = await getDatabase();
+    await db.runAsync('DELETE FROM queued_messages WHERE id = ?;', [String(id)]);
+  } catch (error) {
+    console.error('Failed to delete queued message from SQLite database:', error);
+  }
+}
+
+// --- CONFIG ---
 
 export async function getBurnedState(): Promise<boolean> {
   try {

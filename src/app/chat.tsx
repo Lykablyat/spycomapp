@@ -17,6 +17,9 @@ import {
   fetchStoredMessages,
   clearAllMessages,
   setBurnedState,
+  enqueueMessage,
+  getQueuedMessages,
+  deleteQueuedMessage
 } from '@/db/database';
 import { encryptMessage, decryptMessage, hashRoomKey } from '@/crypto/encryption';
 import { connectSocket, disconnectSocket, getSocket, NetworkMessagePayload } from '@/network/socket';
@@ -107,7 +110,7 @@ export default function ChatScreen() {
         // Connect socket
         activeSocket = connectSocket(serverUrl);
 
-        const handleConnect = () => {
+        const handleConnect = async () => {
           setIsConnected(true);
           console.log(`[DEV_ONLY][CLIENT] Socket connected (${activeSocket?.id})! Joining room ${derivedRoomId} as ${callsign}`);
           activeSocket?.emit('join_room', { roomId: derivedRoomId, callsign });
@@ -116,6 +119,21 @@ export default function ChatScreen() {
           if (isDuressAuth) {
             console.log('[DEV_ONLY][DURESS] Emitting silent distress alert to room...');
             activeSocket?.emit('duress_signal', { roomId: derivedRoomId, senderCallsign: callsign });
+          }
+          
+          // Send any queued messages
+          const queued = await getQueuedMessages(derivedRoomId);
+          if (queued.length > 0) {
+            console.log(`[DEV_ONLY][CLIENT] Found ${queued.length} queued messages to send.`);
+            for (const qMsg of queued) {
+              try {
+                const payload = JSON.parse(qMsg.payloadStr);
+                activeSocket?.emit('send_message', payload);
+                await deleteQueuedMessage(qMsg.id);
+              } catch (err) {
+                console.error('[DEV_ONLY] Failed parsing queued message', err);
+              }
+            }
           }
         };
 
@@ -298,7 +316,12 @@ export default function ChatScreen() {
           viewOnce: sendingViewOnce || undefined,
         };
 
-        socket.emit('send_message', networkPayload);
+        if (socket.connected) {
+          socket.emit('send_message', networkPayload);
+        } else {
+          console.log(`[DEV_ONLY][CLIENT] Socket disconnected, queueing message ${msgId}`);
+          await enqueueMessage(derivedRoomId, msgId, JSON.stringify(networkPayload));
+        }
       } catch (err) {
         console.error('[DEV_ONLY] Failed encrypting/emitting message:', err);
       }
@@ -462,7 +485,7 @@ export default function ChatScreen() {
   return (
     <SafeAreaView className={`flex-1 ${isDreamRoom ? 'bg-[#581C87]' : 'bg-tactical-bg'}`} edges={['top', 'bottom', 'left', 'right']}>
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         className="flex-1"
       >
         {/* Header bar */}
@@ -533,11 +556,20 @@ export default function ChatScreen() {
                   setMessages([]);
                 }
               }}
-              className={`p-1.5 rounded-md border ${isDreamRoom ? 'bg-[#3B0764] border-[#C084FC]' : 'bg-tactical-card border-tactical-borderLight'}`}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                paddingHorizontal: 8,
+                paddingVertical: 4,
+                borderRadius: 6,
+                borderWidth: 1,
+                backgroundColor: isDreamRoom ? '#3B0764' : '#0F172A',
+                borderColor: isDreamRoom ? '#C084FC' : '#334155',
+              }}
             >
               <Ionicons
                 name={isDreamRoom ? 'cloudy-night' : 'cloud-outline'}
-                size={18}
+                size={14}
                 color={isDreamRoom ? '#C084FC' : '#94A3B8'}
               />
             </TouchableOpacity>
@@ -545,10 +577,18 @@ export default function ChatScreen() {
             {/* Burn Button */}
             <TouchableOpacity
               onPress={handlePanicPress}
-              className="bg-tactical-redDark px-3 py-1.5 rounded-md shadow-md"
-              style={{ elevation: 3 }}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                paddingHorizontal: 8,
+                paddingVertical: 4,
+                borderRadius: 6,
+                borderWidth: 1,
+                backgroundColor: '#7F1D1D',
+                borderColor: '#DC2626',
+              }}
             >
-              <Text className="text-white text-[10px] font-black tracking-widest">BURN</Text>
+              <Text className="text-white text-[9px] font-black tracking-widest">BURN</Text>
             </TouchableOpacity>
           </View>
         </View>
