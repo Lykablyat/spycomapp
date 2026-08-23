@@ -25,11 +25,14 @@ export interface DeadDropSignal {
   createdAt: number;
 }
 
-// Default Dead Drop Cloud Relay Endpoint
-// You can deploy server/dead_drop_worker.js to Cloudflare Workers or server/server.js to any Node host
-const DEFAULT_ENDPOINT = 'https://spycom-relay.onrender.com';
+// Dead Drop Endpoints (Auto-fallback)
+// 10.0.2.2 is the Android emulator gateway to host localhost:3000
+const CANDIDATE_ENDPOINTS = [
+  'http://10.0.2.2:3000',
+  'https://spycom-relay.onrender.com',
+];
 
-let currentEndpoint = DEFAULT_ENDPOINT;
+let currentEndpoint = CANDIDATE_ENDPOINTS[0];
 let syncIntervalHandle: any = null;
 let lastSyncTimestamp = 0;
 const processedMessageIds = new Set<string>();
@@ -38,13 +41,43 @@ export function setDeadDropEndpoint(url?: string) {
   if (url && url.startsWith('http')) {
     currentEndpoint = url.replace(/\/+$/, '');
   } else {
-    currentEndpoint = DEFAULT_ENDPOINT;
+    currentEndpoint = CANDIDATE_ENDPOINTS[0];
   }
   console.log(`[DEAD-DROP] Active endpoint set to: ${currentEndpoint}`);
 }
 
 export function getDeadDropEndpoint(): string {
   return currentEndpoint;
+}
+
+// Resilient fetch with 3-second timeout and endpoint fallback
+async function deadDropFetch(path: string, options: RequestInit = {}): Promise<Response> {
+  const endpointsToTry = [currentEndpoint, ...CANDIDATE_ENDPOINTS.filter(e => e !== currentEndpoint)];
+  let lastError: any = null;
+
+  for (const ep of endpointsToTry) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+
+    try {
+      const url = `${ep}${path}`;
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (response.ok || response.status === 400 || response.status === 404) {
+        currentEndpoint = ep; // Stick with working endpoint
+        return response;
+      }
+    } catch (e) {
+      clearTimeout(timeoutId);
+      lastError = e;
+    }
+  }
+
+  throw lastError || new Error('All dead drop endpoints unreachable');
 }
 
 /**
@@ -55,10 +88,9 @@ export async function depositMessage(
   payload: NetworkMessagePayload
 ): Promise<boolean> {
   try {
-    const url = `${currentEndpoint}/api/drop/${roomId}`;
-    console.log(`[DEAD-DROP] Depositing payload ${payload.id} to ${url}...`);
+    console.log(`[DEAD-DROP] Depositing payload ${payload.id} to room ${roomId}...`);
 
-    const response = await fetch(url, {
+    const response = await deadDropFetch(`/api/drop/${roomId}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -78,7 +110,7 @@ export async function depositMessage(
     }
 
     processedMessageIds.add(payload.id);
-    console.log(`[DEAD-DROP] Successfully deposited message ${payload.id}`);
+    console.log(`[DEAD-DROP] Successfully deposited message ${payload.id} at endpoint ${currentEndpoint}`);
     return true;
   } catch (err) {
     console.error('[DEAD-DROP] Network error depositing message:', err);
@@ -94,8 +126,7 @@ export async function retrieveDeadDrops(
   since: number = 0
 ): Promise<DeadDropEntry[]> {
   try {
-    const url = `${currentEndpoint}/api/drop/${roomId}?since=${since}`;
-    const response = await fetch(url, {
+    const response = await deadDropFetch(`/api/drop/${roomId}?since=${since}`, {
       method: 'GET',
       headers: { 'Accept': 'application/json' },
     });
@@ -107,7 +138,6 @@ export async function retrieveDeadDrops(
     const data = await response.json();
     return data.drops || [];
   } catch (err) {
-    console.warn('[DEAD-DROP] Error fetching dead drops:', err);
     return [];
   }
 }
@@ -121,10 +151,9 @@ export async function sendEmergencySignal(
   senderCallsign: string
 ): Promise<boolean> {
   try {
-    const url = `${currentEndpoint}/api/signal/${roomId}`;
-    console.log(`[DEAD-DROP] Broadcasting emergency signal '${signalType}' to ${url}...`);
+    console.log(`[DEAD-DROP] Broadcasting emergency signal '${signalType}' to room ${roomId}...`);
 
-    const response = await fetch(url, {
+    const response = await deadDropFetch(`/api/signal/${roomId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -148,8 +177,7 @@ export async function retrieveSignals(
   since: number = 0
 ): Promise<DeadDropSignal[]> {
   try {
-    const url = `${currentEndpoint}/api/signal/${roomId}?since=${since}`;
-    const response = await fetch(url, {
+    const response = await deadDropFetch(`/api/signal/${roomId}?since=${since}`, {
       method: 'GET',
       headers: { 'Accept': 'application/json' },
     });
