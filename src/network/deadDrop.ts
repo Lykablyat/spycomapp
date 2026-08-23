@@ -3,7 +3,8 @@ import { EncryptedPayload } from '../crypto/encryption';
 export interface NetworkMessagePayload {
   id: string;
   roomId: string;
-  senderCallsign: string;
+  senderCallsign?: string;
+  senderClientId?: string;
   encrypted: EncryptedPayload;
   createdAt: number;
   viewOnce?: boolean;
@@ -13,7 +14,8 @@ export interface NetworkMessagePayload {
 
 export interface DeadDropEntry {
   id: string;
-  senderCallsign: string;
+  senderCallsign?: string;
+  senderClientId?: string;
   encrypted: EncryptedPayload;
   createdAt: number;
   viewOnce?: boolean;
@@ -21,19 +23,28 @@ export interface DeadDropEntry {
 
 export interface DeadDropSignal {
   type: string;
-  senderCallsign: string;
+  senderCallsign?: string;
+  senderClientId?: string;
   createdAt: number;
 }
+
+export type PresenceMode = 'COM' | 'LONE' | 'OFFLINE';
 
 // ============================================================================
 // 🌐 GLOBAL CLOUDFLARE DEAD-DROP ENDPOINT CONFIGURATION
 // ============================================================================
-// Paste your deployed Cloudflare Worker URL here:
 export const CLOUDFLARE_WORKER_URL = 'https://spycomapp-relay.duzcanemre.workers.dev';
+
+// Unique random client instance ID for this app session
+const MY_CLIENT_ID = 'client_' + Math.random().toString(36).substring(2, 10);
 
 let syncIntervalHandle: any = null;
 let lastSyncTimestamp = 0;
 const processedMessageIds = new Set<string>();
+
+export function getMyClientId(): string {
+  return MY_CLIENT_ID;
+}
 
 export function getDeadDropEndpoint(): string {
   return (CLOUDFLARE_WORKER_URL || '').replace(/\/+$/, '');
@@ -78,6 +89,9 @@ export async function depositMessage(
   try {
     console.log(`[DEAD-DROP] Depositing payload ${payload.id} to room ${roomId}...`);
 
+    // Track own message locally immediately so we never duplicate it upon polling
+    processedMessageIds.add(payload.id);
+
     const response = await deadDropFetch(`/api/drop/${roomId}`, {
       method: 'POST',
       headers: {
@@ -85,7 +99,8 @@ export async function depositMessage(
       },
       body: JSON.stringify({
         id: payload.id,
-        senderCallsign: payload.senderCallsign,
+        senderCallsign: payload.senderCallsign || '',
+        senderClientId: MY_CLIENT_ID,
         encrypted: payload.encrypted,
         createdAt: payload.createdAt || Date.now(),
         viewOnce: payload.viewOnce,
@@ -97,7 +112,6 @@ export async function depositMessage(
       return false;
     }
 
-    processedMessageIds.add(payload.id);
     console.log(`[DEAD-DROP] Successfully deposited message ${payload.id}`);
     return true;
   } catch (err) {
@@ -131,12 +145,40 @@ export async function retrieveDeadDrops(
 }
 
 /**
+ * Send heartbeat and query presence mode ('COM' vs 'LONE').
+ */
+export async function updatePresence(
+  roomId: string,
+  callsign?: string
+): Promise<PresenceMode> {
+  try {
+    const response = await deadDropFetch(`/api/presence/${roomId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        clientId: MY_CLIENT_ID,
+        callsign: callsign || '',
+      }),
+    });
+
+    if (!response.ok) {
+      if (response.status === 404) return 'LONE';
+      return 'OFFLINE';
+    }
+    const data = await response.json();
+    return data.mode === 'COM' ? 'COM' : 'LONE';
+  } catch (err) {
+    return 'OFFLINE';
+  }
+}
+
+/**
  * Broadcast an urgent emergency signal (Burn Notice / Duress Beacon).
  */
 export async function sendEmergencySignal(
   roomId: string,
   signalType: 'burn_notice' | 'duress_signal',
-  senderCallsign: string
+  senderCallsign?: string
 ): Promise<boolean> {
   try {
     console.log(`[DEAD-DROP] Broadcasting emergency signal '${signalType}' to room ${roomId}...`);
@@ -146,7 +188,8 @@ export async function sendEmergencySignal(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         type: signalType,
-        senderCallsign,
+        senderCallsign: senderCallsign || '',
+        senderClientId: MY_CLIENT_ID,
       }),
     });
 
@@ -178,13 +221,6 @@ export async function retrieveSignals(
   }
 }
 
-// Unique random client instance ID to distinguish devices even with identical callsigns
-const MY_CLIENT_ID = 'client_' + Math.random().toString(36).substring(2, 10);
-
-export function getMyClientId(): string {
-  return MY_CLIENT_ID;
-}
-
 /**
  * Start high-frequency live synchronization while operative is active in the room.
  */
@@ -194,7 +230,7 @@ export function startLiveSync(
   callbacks: {
     onMessage: (drop: DeadDropEntry) => void;
     onSignal: (signal: DeadDropSignal) => void;
-    onStatusChange: (connected: boolean) => void;
+    onPresenceChange: (presence: PresenceMode) => void;
   }
 ) {
   stopLiveSync();
@@ -203,39 +239,42 @@ export function startLiveSync(
   const endpoint = getDeadDropEndpoint();
   if (!endpoint) {
     console.warn('[DEAD-DROP] Worker URL not set. Messages will queue locally.');
-    callbacks.onStatusChange(false);
+    callbacks.onPresenceChange('OFFLINE');
     return;
   }
 
-  console.log(`[DEAD-DROP] Starting Live Sync for room: ${roomId} via ${endpoint} (My Client ID: ${MY_CLIENT_ID})`);
-  callbacks.onStatusChange(true);
+  console.log(`[DEAD-DROP] Starting Live Sync for room: ${roomId} (Client: ${MY_CLIENT_ID})`);
 
   // Sync routine
   const performSync = async () => {
     try {
-      // 1. Fetch any new dead-drop messages
+      // 1. Heartbeat Presence Check ('COM' vs 'LONE' vs 'OFFLINE')
+      const presence = await updatePresence(roomId, myCallsign);
+      callbacks.onPresenceChange(presence);
+
+      // 2. Fetch any new dead-drop messages
       const drops = await retrieveDeadDrops(roomId, lastSyncTimestamp);
       for (const drop of drops) {
-        // Only deliver if we haven't processed this message ID yet (sent messages are added to processedMessageIds on send)
+        // Only deliver if we haven't processed this message ID yet
         if (!processedMessageIds.has(drop.id)) {
           processedMessageIds.add(drop.id);
           if (drop.createdAt > lastSyncTimestamp) {
             lastSyncTimestamp = drop.createdAt;
           }
-          console.log(`[DEAD-DROP] Delivering incoming message ${drop.id} from ${drop.senderCallsign}`);
+          console.log(`[DEAD-DROP] Delivering incoming message ${drop.id}`);
           callbacks.onMessage(drop);
         }
       }
 
-      // 2. Fetch any emergency signals
+      // 3. Fetch any emergency signals
       const signals = await retrieveSignals(roomId, Date.now() - 30000);
       for (const sig of signals) {
-        callbacks.onSignal(sig);
+        if (sig.senderClientId !== MY_CLIENT_ID) {
+          callbacks.onSignal(sig);
+        }
       }
-
-      callbacks.onStatusChange(true);
     } catch (e) {
-      console.warn('[DEAD-DROP] Sync cycle warning:', e);
+      callbacks.onPresenceChange('OFFLINE');
     }
   };
 

@@ -4,7 +4,7 @@
  * Protocol: 100% Zero-Knowledge Store-and-Forward
  * - Edge Persistent (Cloudflare KV with 24-Hour Native TTL)
  * - Distributed across 300+ Global Data Centers
- * - 0ms Cold Start // Always-On // Free Tier Forever
+ * - Real-time Edge Heartbeat Presence ('LONE' vs 'COM')
  */
 
 const CORS_HEADERS = {
@@ -15,6 +15,7 @@ const CORS_HEADERS = {
 
 // In-memory fallback if KV namespace is not bound
 const memoryStore = new Map();
+const presenceStore = new Map(); // roomId -> Array<{ clientId, callsign, lastSeen }>
 
 export default {
   async fetch(request, env, ctx) {
@@ -40,6 +41,58 @@ export default {
       );
     }
 
+    // Route: /api/presence/:roomId (Heartbeat / Presence detection)
+    const presenceMatch = path.match(/^\/api\/presence\/([a-f0-9]+)$/);
+    if (presenceMatch) {
+      const roomId = presenceMatch[1];
+      const now = Date.now();
+
+      // Clean stale presence entries older than 5 seconds
+      let activeList = (presenceStore.get(roomId) || []).filter(p => (now - p.lastSeen) < 5000);
+
+      if (request.method === 'POST') {
+        try {
+          const body = await request.json();
+          const clientId = body?.clientId || 'anon';
+          const callsign = body?.callsign || '';
+
+          // Upsert client
+          const existingIdx = activeList.findIndex(p => p.clientId === clientId);
+          if (existingIdx >= 0) {
+            activeList[existingIdx].lastSeen = now;
+            activeList[existingIdx].callsign = callsign;
+          } else {
+            activeList.push({ clientId, callsign, lastSeen: now });
+          }
+
+          presenceStore.set(roomId, activeList);
+
+          return new Response(
+            JSON.stringify({
+              activeCount: activeList.length,
+              mode: activeList.length >= 2 ? 'COM' : 'LONE',
+            }),
+            { headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+          );
+        } catch (e) {
+          return new Response(JSON.stringify({ error: 'Malformed presence payload' }), {
+            status: 400,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          });
+        }
+      }
+
+      if (request.method === 'GET') {
+        return new Response(
+          JSON.stringify({
+            activeCount: activeList.length,
+            mode: activeList.length >= 2 ? 'COM' : 'LONE',
+          }),
+          { headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+        );
+      }
+    }
+
     // Route: /api/drop/:roomId
     const dropMatch = path.match(/^\/api\/drop\/([a-f0-9]+)$/);
     if (dropMatch) {
@@ -59,7 +112,8 @@ export default {
 
           const dropEntry = {
             id: payload.id || String(Date.now()),
-            senderCallsign: payload.senderCallsign || 'ANON',
+            senderCallsign: payload.senderCallsign || '',
+            senderClientId: payload.senderClientId || '',
             encrypted: payload.encrypted,
             createdAt: payload.createdAt || Date.now(),
             viewOnce: Boolean(payload.viewOnce),
@@ -128,6 +182,7 @@ export default {
           memoryStore.delete(kvKey);
           memoryStore.delete(`room:${roomId}:signals`);
         }
+        presenceStore.delete(roomId);
 
         return new Response(
           JSON.stringify({ success: true, purged: true }),
@@ -148,7 +203,8 @@ export default {
           const payload = await request.json();
           const signalEntry = {
             type: payload.type,
-            senderCallsign: payload.senderCallsign || 'ANON',
+            senderCallsign: payload.senderCallsign || '',
+            senderClientId: payload.senderClientId || '',
             createdAt: Date.now(),
           };
 

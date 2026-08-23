@@ -17,7 +17,7 @@ import { initDatabase, getBurnedState, getDuressCode, saveDuressCode } from '@/d
 export default function PairingScreen() {
   const router = useRouter();
   const [connectionKey, setConnectionKey] = useState('');
-  const [callsign, setCallsign] = useState('OPERATOR-ALPHA');
+  const [callsign, setCallsign] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -29,7 +29,7 @@ export default function PairingScreen() {
         router.replace('/decoy');
         return;
       }
-      }
+    }
     init();
   }, [router]);
 
@@ -47,7 +47,7 @@ export default function PairingScreen() {
     router.push({
       pathname: '/chat',
       params: {
-        callsign: callsign.trim() || 'OPERATOR-ALPHA',
+        callsign: callsign.trim() || '',
         connectionKey: connectionKey.trim(),
         isDuress: isDuressAuth ? 'true' : 'false',
       },

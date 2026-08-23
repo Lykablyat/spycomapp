@@ -30,6 +30,7 @@ import {
   DeadDropEntry,
   DeadDropSignal,
   NetworkMessagePayload,
+  PresenceMode,
 } from '@/network/deadDrop';
 import { setAppIcon } from '@howincodes/expo-dynamic-app-icon';
 
@@ -49,7 +50,7 @@ export default function ChatScreen() {
   // State
   const [messages, setMessages] = useState<IMessage[]>([]);
   const [roomId, setRoomId] = useState<string>('');
-  const [isConnected, setIsConnected] = useState(false);
+  const [presenceMode, setPresenceMode] = useState<PresenceMode>('LONE');
   const [peerCallsign, setPeerCallsign] = useState<string | null>(null);
   const [duressAlertReceived, setDuressAlertReceived] = useState(false);
 
@@ -122,12 +123,13 @@ export default function ChatScreen() {
             try {
               const decryptedText = await decryptMessage(drop.encrypted, connectionKeyRef.current);
               const msgId = drop.id || String(Date.now());
+              const senderDisplayName = drop.senderCallsign || 'OPERATIVE';
 
               // Handle View Once messages — held in volatile RAM only
               if (drop.viewOnce) {
                 viewOnceDataRef.current[msgId] = {
                   originalText: decryptedText,
-                  senderCallsign: drop.senderCallsign,
+                  senderCallsign: senderDisplayName,
                   isOwn: false,
                 };
 
@@ -135,7 +137,7 @@ export default function ChatScreen() {
                   _id: msgId,
                   text: '🔒 CLASSIFIED INTEL',
                   createdAt: new Date(drop.createdAt),
-                  user: { _id: 2, name: drop.senderCallsign },
+                  user: { _id: 2, name: senderDisplayName },
                 };
                 if (mounted) setMessages((prev) => GiftedChat.append(prev, [sealedMsg]));
                 return;
@@ -146,7 +148,7 @@ export default function ChatScreen() {
                 _id: msgId,
                 text: decryptedText,
                 createdAt: new Date(drop.createdAt),
-                user: { _id: 2, name: drop.senderCallsign },
+                user: { _id: 2, name: senderDisplayName },
               };
 
               if (mounted) setMessages((prev) => GiftedChat.append(prev, [incomingMsg]));
@@ -181,8 +183,8 @@ export default function ChatScreen() {
             }
           },
 
-          onStatusChange: (connected: boolean) => {
-            if (mounted) setIsConnected(connected);
+          onPresenceChange: (presence: PresenceMode) => {
+            if (mounted) setPresenceMode(presence);
           },
         });
 
@@ -476,9 +478,20 @@ export default function ChatScreen() {
                 {isDreamRoom ? 'DREAM ROOM' : 'SECURE COMMS'}
               </Text>
               <View className="flex-row items-center mt-1">
-                <View className={`w-2 h-2 rounded-full mr-1.5 ${isConnected ? 'bg-[#00FF66]' : 'bg-[#EF4444]'}`} />
-                <Text className="text-tactical-textMuted text-[10px] font-bold tracking-widest" style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>
-                  {isConnected ? 'LINK ACTIVE' : 'CONNECTING...'}
+                <View className={`w-2 h-2 rounded-full mr-1.5 ${
+                  presenceMode === 'COM' ? 'bg-[#00FF66]' :
+                  presenceMode === 'LONE' ? 'bg-[#F59E0B]' :
+                  'bg-[#EF4444]'
+                }`} />
+                <Text
+                  className={`text-[10px] font-bold tracking-widest ${
+                    presenceMode === 'COM' ? 'text-[#00FF66]' :
+                    presenceMode === 'LONE' ? 'text-[#F59E0B]' :
+                    'text-[#EF4444]'
+                  }`}
+                  style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}
+                >
+                  {presenceMode}
                 </Text>
               </View>
             </View>
