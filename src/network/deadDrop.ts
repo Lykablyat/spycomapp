@@ -173,16 +173,14 @@ export async function updatePresence(
 }
 
 /**
- * Broadcast an urgent emergency signal (Burn Notice / Duress Beacon).
+ * Broadcast an emergency or presence signal (Burn Notice / Duress Beacon / Peer Ping).
  */
 export async function sendEmergencySignal(
   roomId: string,
-  signalType: 'burn_notice' | 'duress_signal',
+  signalType: 'burn_notice' | 'duress_signal' | 'peer_ping',
   senderCallsign?: string
 ): Promise<boolean> {
   try {
-    console.log(`[DEAD-DROP] Broadcasting emergency signal '${signalType}' to room ${roomId}...`);
-
     const response = await deadDropFetch(`/api/signal/${roomId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -195,13 +193,12 @@ export async function sendEmergencySignal(
 
     return response.ok;
   } catch (err) {
-    console.error('[DEAD-DROP] Error sending emergency signal:', err);
     return false;
   }
 }
 
 /**
- * Retrieve active emergency signals for this room.
+ * Retrieve active signals for this room.
  */
 export async function retrieveSignals(
   roomId: string,
@@ -221,6 +218,9 @@ export async function retrieveSignals(
   }
 }
 
+let lastPingTime = 0;
+let lastPeerSeenTime = 0;
+
 /**
  * Start high-frequency live synchronization while operative is active in the room.
  */
@@ -235,6 +235,8 @@ export function startLiveSync(
 ) {
   stopLiveSync();
   processedMessageIds.clear();
+  lastPeerSeenTime = 0;
+  lastPingTime = 0;
 
   const endpoint = getDeadDropEndpoint();
   if (!endpoint) {
@@ -248,11 +250,31 @@ export function startLiveSync(
   // Sync routine
   const performSync = async () => {
     try {
-      // 1. Heartbeat Presence Check ('COM' vs 'LONE' vs 'OFFLINE')
-      const presence = await updatePresence(roomId, myCallsign);
-      callbacks.onPresenceChange(presence);
+      const now = Date.now();
 
-      // 2. Fetch any new dead-drop messages
+      // 1. Broadcast heartbeat ping every 2 seconds
+      if (now - lastPingTime > 2000) {
+        lastPingTime = now;
+        sendEmergencySignal(roomId, 'peer_ping', myCallsign);
+      }
+
+      // 2. Fetch recent signals (last 10s) to detect peer presence and alerts
+      const signals = await retrieveSignals(roomId, now - 10000);
+      for (const sig of signals) {
+        if (sig.senderClientId !== MY_CLIENT_ID) {
+          if (sig.type === 'peer_ping') {
+            lastPeerSeenTime = sig.createdAt || now;
+          } else if (sig.type === 'burn_notice' || sig.type === 'duress_signal') {
+            callbacks.onSignal(sig);
+          }
+        }
+      }
+
+      // 3. Evaluate presence mode: COM if peer seen within last 5 seconds, else LONE
+      const isPeerOnline = (now - lastPeerSeenTime) < 5000;
+      callbacks.onPresenceChange(isPeerOnline ? 'COM' : 'LONE');
+
+      // 4. Fetch any new dead-drop messages
       const drops = await retrieveDeadDrops(roomId, lastSyncTimestamp);
       for (const drop of drops) {
         // Only deliver if we haven't processed this message ID yet
@@ -263,14 +285,6 @@ export function startLiveSync(
           }
           console.log(`[DEAD-DROP] Delivering incoming message ${drop.id}`);
           callbacks.onMessage(drop);
-        }
-      }
-
-      // 3. Fetch any emergency signals
-      const signals = await retrieveSignals(roomId, Date.now() - 30000);
-      for (const sig of signals) {
-        if (sig.senderClientId !== MY_CLIENT_ID) {
-          callbacks.onSignal(sig);
         }
       }
     } catch (e) {
