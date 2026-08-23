@@ -21,6 +21,7 @@ import {
   getQueuedMessages,
   deleteQueuedMessage
 } from '@/db/database';
+import { encryptMessage, decryptMessage, hashRoomKey } from '@/crypto/encryption';
 import {
   startLiveSync,
   stopLiveSync,
