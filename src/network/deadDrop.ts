@@ -178,6 +178,13 @@ export async function retrieveSignals(
   }
 }
 
+// Unique random client instance ID to distinguish devices even with identical callsigns
+const MY_CLIENT_ID = 'client_' + Math.random().toString(36).substring(2, 10);
+
+export function getMyClientId(): string {
+  return MY_CLIENT_ID;
+}
+
 /**
  * Start high-frequency live synchronization while operative is active in the room.
  */
@@ -200,7 +207,7 @@ export function startLiveSync(
     return;
   }
 
-  console.log(`[DEAD-DROP] Starting Live Sync for room: ${roomId} via ${endpoint}`);
+  console.log(`[DEAD-DROP] Starting Live Sync for room: ${roomId} via ${endpoint} (My Client ID: ${MY_CLIENT_ID})`);
   callbacks.onStatusChange(true);
 
   // Sync routine
@@ -209,23 +216,21 @@ export function startLiveSync(
       // 1. Fetch any new dead-drop messages
       const drops = await retrieveDeadDrops(roomId, lastSyncTimestamp);
       for (const drop of drops) {
+        // Only deliver if we haven't processed this message ID yet (sent messages are added to processedMessageIds on send)
         if (!processedMessageIds.has(drop.id)) {
           processedMessageIds.add(drop.id);
           if (drop.createdAt > lastSyncTimestamp) {
             lastSyncTimestamp = drop.createdAt;
           }
-          if (drop.senderCallsign !== myCallsign) {
-            callbacks.onMessage(drop);
-          }
+          console.log(`[DEAD-DROP] Delivering incoming message ${drop.id} from ${drop.senderCallsign}`);
+          callbacks.onMessage(drop);
         }
       }
 
       // 2. Fetch any emergency signals
       const signals = await retrieveSignals(roomId, Date.now() - 30000);
       for (const sig of signals) {
-        if (sig.senderCallsign !== myCallsign) {
-          callbacks.onSignal(sig);
-        }
+        callbacks.onSignal(sig);
       }
 
       callbacks.onStatusChange(true);
