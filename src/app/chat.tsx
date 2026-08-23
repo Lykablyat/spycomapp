@@ -21,8 +21,15 @@ import {
   getQueuedMessages,
   deleteQueuedMessage
 } from '@/db/database';
-import { encryptMessage, decryptMessage, hashRoomKey } from '@/crypto/encryption';
-import { connectSocket, disconnectSocket, getSocket, NetworkMessagePayload } from '@/network/socket';
+import {
+  startLiveSync,
+  stopLiveSync,
+  depositMessage,
+  sendEmergencySignal,
+  DeadDropEntry,
+  DeadDropSignal,
+  NetworkMessagePayload,
+} from '@/network/deadDrop';
 import { setAppIcon } from '@howincodes/expo-dynamic-app-icon';
 
 export default function ChatScreen() {
@@ -32,7 +39,6 @@ export default function ChatScreen() {
   // Params
   const callsign = (params.callsign as string) || 'UNKNOWN';
   const connectionKey = params.connectionKey as string;
-  const serverUrl = params.serverUrl as string;
   const isDuressAuth = params.isDuress === 'true';
 
   // Refs for callbacks
@@ -86,9 +92,9 @@ export default function ChatScreen() {
     }
   }, [isDuressAuth]);
 
-  // Initialize SQLite database and Socket.IO connection
+  // Initialize SQLite database and 24-Hour Encrypted Dead Drop Live Sync
   useEffect(() => {
-    let activeSocket: ReturnType<typeof connectSocket> | null = null;
+    let mounted = true;
 
     async function initChat() {
       if (!connectionKey) return;
@@ -102,145 +108,117 @@ export default function ChatScreen() {
         // Load existing history if not a dream room
         if (!isDreamRoom) {
           const storedMessages = await fetchStoredMessages(derivedRoomId);
-          setMessages(storedMessages);
+          if (mounted) setMessages(storedMessages);
         }
 
-        console.log(`[DEV_ONLY][CLIENT] Init chat network with serverUrl=${serverUrl}, room=${derivedRoomId}`);
+        console.log(`[DEAD-DROP][CLIENT] Starting Dead Drop engine for room=${derivedRoomId}`);
 
-        // Connect socket
-        activeSocket = connectSocket(serverUrl);
+        // Start Live Synchronization & Asynchronous Dead Drop Pickup
+        startLiveSync(derivedRoomId, callsign, {
+          onMessage: async (drop: DeadDropEntry) => {
+            console.log('[DEAD-DROP][CLIENT] Picked up encrypted message from dead drop:', drop.id);
 
-        const handleConnect = async () => {
-          setIsConnected(true);
-          console.log(`[DEV_ONLY][CLIENT] Socket connected (${activeSocket?.id})! Joining room ${derivedRoomId} as ${callsign}`);
-          activeSocket?.emit('join_room', { roomId: derivedRoomId, callsign });
+            try {
+              const decryptedText = await decryptMessage(drop.encrypted, connectionKeyRef.current);
+              const msgId = drop.id || String(Date.now());
 
-          // If user logged in under duress code, silently emit distress signal to peer
-          if (isDuressAuth) {
-            console.log('[DEV_ONLY][DURESS] Emitting silent distress alert to room...');
-            activeSocket?.emit('duress_signal', { roomId: derivedRoomId, senderCallsign: callsign });
-          }
-          
-          // Send any queued messages
-          const queued = await getQueuedMessages(derivedRoomId);
-          if (queued.length > 0) {
-            console.log(`[DEV_ONLY][CLIENT] Found ${queued.length} queued messages to send.`);
-            for (const qMsg of queued) {
-              try {
-                const payload = JSON.parse(qMsg.payloadStr);
-                activeSocket?.emit('send_message', payload);
-                await deleteQueuedMessage(qMsg.id);
-              } catch (err) {
-                console.error('[DEV_ONLY] Failed parsing queued message', err);
+              // Handle View Once messages — held in volatile RAM only
+              if (drop.viewOnce) {
+                viewOnceDataRef.current[msgId] = {
+                  originalText: decryptedText,
+                  senderCallsign: drop.senderCallsign,
+                  isOwn: false,
+                };
+
+                const sealedMsg: IMessage = {
+                  _id: msgId,
+                  text: '🔒 CLASSIFIED INTEL',
+                  createdAt: new Date(drop.createdAt),
+                  user: { _id: 2, name: drop.senderCallsign },
+                };
+                if (mounted) setMessages((prev) => GiftedChat.append(prev, [sealedMsg]));
+                return;
               }
-            }
-          }
-        };
 
-        if (activeSocket.connected) {
-          handleConnect();
+              // Normal message
+              const incomingMsg: IMessage = {
+                _id: msgId,
+                text: decryptedText,
+                createdAt: new Date(drop.createdAt),
+                user: { _id: 2, name: drop.senderCallsign },
+              };
+
+              if (mounted) setMessages((prev) => GiftedChat.append(prev, [incomingMsg]));
+
+              if (!isDreamRoomRef.current) {
+                await saveMessage(incomingMsg, derivedRoomId);
+              }
+            } catch (err) {
+              console.error('[DEAD-DROP][CLIENT] Failed decrypting dead drop message:', err);
+            }
+          },
+
+          onSignal: (signal: DeadDropSignal) => {
+            if (signal.type === 'duress_signal') {
+              console.warn('[DEAD-DROP][DURESS] Received emergency distress beacon from peer!');
+              if (mounted) setDuressAlertReceived(true);
+            } else if (signal.type === 'burn_notice') {
+              console.log('[DEAD-DROP][BURN] Remote wipe signal received! Purging operative data...');
+              (async () => {
+                try {
+                  await setAppIcon('calculator');
+                } catch (e) {
+                  console.error('Failed to set disguise app icon', e);
+                }
+                await setBurnedState(true);
+                await clearAllMessages();
+                if (mounted) {
+                  setMessages([]);
+                  router.replace('/decoy');
+                }
+              })();
+            }
+          },
+
+          onStatusChange: (connected: boolean) => {
+            if (mounted) setIsConnected(connected);
+          },
+        });
+
+        // If operative logged in under duress code, silently deposit distress signal to room
+        if (isDuressAuth) {
+          console.log('[DEAD-DROP][DURESS] Depositing silent distress signal to room...');
+          await sendEmergencySignal(derivedRoomId, 'duress_signal', callsign);
         }
 
-        activeSocket?.on('connect', handleConnect);
-
-        activeSocket?.on('disconnect', () => {
-          console.log('[DEV_ONLY][CLIENT] Socket disconnected');
-          setIsConnected(false);
-        });
-
-        activeSocket?.on('peer_joined', (data: { callsign?: string }) => {
-          console.log('[DEV_ONLY][CLIENT] Peer joined:', data);
-          if (data?.callsign) {
-            setPeerCallsign(data.callsign);
-          }
-        });
-
-        // Listen for incoming encrypted messages from peer
-        activeSocket?.on('receive_message', async (payload: NetworkMessagePayload) => {
-          console.log('[DEV_ONLY][CLIENT] Received payload over socket (encrypted)');
-
-          if (payload.senderCallsign === callsignRef.current) {
-            return;
-          }
-
-          try {
-            const decryptedText = await decryptMessage(payload.encrypted, connectionKeyRef.current);
-            const msgId = payload.id || String(Date.now());
-
-            // Handle View Once messages — store in memory only, never persisted
-            if (payload.viewOnce) {
-              viewOnceDataRef.current[msgId] = {
-                originalText: decryptedText,
-                senderCallsign: payload.senderCallsign,
-                isOwn: false,
-              };
-
-              const sealedMsg: IMessage = {
-                _id: msgId,
-                text: '🔒 CLASSIFIED INTEL',
-                createdAt: new Date(payload.createdAt),
-                user: { _id: 2, name: payload.senderCallsign },
-              };
-              setMessages((prev) => GiftedChat.append(prev, [sealedMsg]));
-              // View Once received messages are NEVER persisted to SQLite
-              return;
+        // Send any queued offline messages
+        const queued = await getQueuedMessages(derivedRoomId);
+        if (queued.length > 0) {
+          console.log(`[DEAD-DROP][CLIENT] Found ${queued.length} queued messages to deposit.`);
+          for (const qMsg of queued) {
+            try {
+              const payload = JSON.parse(qMsg.payloadStr);
+              const deposited = await depositMessage(derivedRoomId, payload);
+              if (deposited) {
+                await deleteQueuedMessage(qMsg.id);
+              }
+            } catch (err) {
+              console.error('[DEAD-DROP] Failed depositing queued message', err);
             }
-
-            // Normal message
-            const incomingMsg: IMessage = {
-              _id: msgId,
-              text: decryptedText,
-              createdAt: new Date(payload.createdAt),
-              user: {
-                _id: 2,
-                name: payload.senderCallsign,
-              },
-            };
-
-            setMessages((previousMessages) => GiftedChat.append(previousMessages, [incomingMsg]));
-
-            // Persist to DB if not Dream Room
-            if (!isDreamRoomRef.current) {
-              await saveMessage(incomingMsg, roomId || derivedRoomId);
-            }
-          } catch (err) {
-            console.error('[DEV_ONLY] Failed decrypting incoming socket message:', err);
           }
-        });
-
-        // Listen for peer duress alert
-        activeSocket?.on('duress_signal', (payload: { senderCallsign?: string }) => {
-          console.warn('[DEV_ONLY][DURESS ALERT] RECEIVED DISTRESS SIGNAL FROM PEER!', payload);
-          setDuressAlertReceived(true);
-        });
-
-        // Listen for burn notice from peer
-        activeSocket?.on('burn_notice', async () => {
-          console.log('[DEV_ONLY][CLIENT] BURN NOTICE received! Wiping local storage...');
-          try {
-            await setAppIcon('calculator');
-          } catch (e) {
-            console.error('Failed to set disguise app icon', e);
-          }
-          await setBurnedState(true);
-          await clearAllMessages();
-          setMessages([]);
-          router.replace('/decoy');
-        });
+        }
       } catch (err) {
-        console.error('[DEV_ONLY] Failed initializing chat network:', err);
+        console.error('[DEAD-DROP][CLIENT] Failed initializing chat network:', err);
       }
     }
 
     initChat();
 
     return () => {
-      if (activeSocket) {
-        activeSocket.removeAllListeners();
-      }
-      disconnectSocket();
+      mounted = false;
+      stopLiveSync();
     };
-  }, [callsign, connectionKey, serverUrl, isDuressAuth]);
+  }, [callsign, connectionKey, isDuressAuth]);
 
   // View Once handlers
   const handleRevealViewOnce = useCallback((msgId: string) => {
@@ -299,13 +277,12 @@ export default function ChatScreen() {
         }
       }
 
-      // Encrypt the REAL text and transmit over Socket.IO relay
+      // Encrypt the REAL text and deposit into the 24-hour Dead Drop
       try {
         const encrypted = await encryptMessage(msgToSend.text, connectionKey);
-        const socket = getSocket() || connectSocket(serverUrl);
         const derivedRoomId = roomId || (await hashRoomKey(connectionKey));
 
-        console.log(`[DEV_ONLY][CLIENT] Transmitting encrypted payload to room ${derivedRoomId}...`);
+        console.log(`[DEAD-DROP][CLIENT] Depositing encrypted payload to room ${derivedRoomId}...`);
 
         const networkPayload: NetworkMessagePayload = {
           id: msgId,
@@ -314,28 +291,27 @@ export default function ChatScreen() {
           encrypted,
           createdAt: timestamp,
           viewOnce: sendingViewOnce || undefined,
+          type: 'message',
         };
 
-        if (socket.connected) {
-          socket.emit('send_message', networkPayload);
-        } else {
-          console.log(`[DEV_ONLY][CLIENT] Socket disconnected, queueing message ${msgId}`);
+        const success = await depositMessage(derivedRoomId, networkPayload);
+        if (!success) {
+          console.log(`[DEAD-DROP][CLIENT] Direct deposit failed, saving to offline queue ${msgId}`);
           await enqueueMessage(derivedRoomId, msgId, JSON.stringify(networkPayload));
         }
       } catch (err) {
-        console.error('[DEV_ONLY] Failed encrypting/emitting message:', err);
+        console.error('[DEAD-DROP][CLIENT] Failed encrypting/depositing message:', err);
       }
     },
-    [callsign, connectionKey, roomId, serverUrl, isDreamRoom, isViewOnce]
+    [callsign, connectionKey, roomId, isDreamRoom, isViewOnce]
   );
 
   const handlePanicPress = async () => {
     try {
-      const socket = getSocket() || connectSocket(serverUrl);
       const derivedRoomId = roomId || (await hashRoomKey(connectionKey));
-      socket.emit('burn_notice', { roomId: derivedRoomId });
+      await sendEmergencySignal(derivedRoomId, 'burn_notice', callsign);
     } catch (err) {
-      console.error('[DEV_ONLY] Failed emitting burn notice:', err);
+      console.error('[DEAD-DROP][CLIENT] Failed sending burn notice:', err);
     }
 
     try {
@@ -485,7 +461,7 @@ export default function ChatScreen() {
   return (
     <SafeAreaView className={`flex-1 ${isDreamRoom ? 'bg-[#581C87]' : 'bg-tactical-bg'}`} edges={['top', 'bottom', 'left', 'right']}>
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior="padding"
         className="flex-1"
       >
         {/* Header bar */}

@@ -9,6 +9,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useRouter } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { initDatabase, getBurnedState, getDuressCode, saveDuressCode } from '@/db/database';
@@ -48,7 +49,6 @@ export default function PairingScreen() {
       params: {
         callsign: callsign.trim() || 'OPERATOR-ALPHA',
         connectionKey: connectionKey.trim(),
-        serverUrl: 'https://spycom-relay.onrender.com',
         isDuress: isDuressAuth ? 'true' : 'false',
       },
     });
@@ -56,11 +56,11 @@ export default function PairingScreen() {
 
   return (
     <SafeAreaView className="flex-1 bg-tactical-bg" edges={['top', 'bottom', 'left', 'right']}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      <KeyboardAwareScrollView
+        contentContainerStyle={{ flexGrow: 1, justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 12 }}
+        keyboardShouldPersistTaps="handled"
         className="flex-1"
       >
-        <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 12 }} keyboardShouldPersistTaps="handled">
           {/* Top Telemetry Header */}
           <View className="flex-row justify-between bg-tactical-card py-2 px-3 rounded-md border border-tactical-border">
             <View className="flex-row items-center gap-1.5">
@@ -179,8 +179,7 @@ export default function PairingScreen() {
             <Text className="text-tactical-textDark text-[9px] font-bold tracking-[1px]" style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>AES-256-GCM E2EE // STATELESS RELAY SERVER</Text>
             <Text className="text-tactical-borderLight text-[8px] mt-0.5" style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>TACTICAL MESH NETWORK v1.0.0</Text>
           </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardAwareScrollView>
     </SafeAreaView>
   );
 }

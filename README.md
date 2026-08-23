@@ -16,7 +16,10 @@
 ## 🛡️ Operational Directives & Security Protocols
 
 * **⚡ Zero-Footprint Transmission (Zero Cloud Retention)**  
-  Communications exist only on physical operational hardware. There are no cloud servers storing your messages or metadata—traffic is relayed and instantly vaporized.
+  Communications exist only on physical operational hardware. There are no permanent cloud databases storing your messages or metadata—traffic is relayed and instantly vaporized.
+
+* **📬 Asynchronous Dead Drop (24-Hour Operational Window)**  
+  Operatives need not be online simultaneously. Transmissions sent while your partner is offline are held securely in a blind, encrypted dead drop. The recipient device automatically retrieves and decrypts all waiting intel upon establishing connection within a 24-hour window before automatic vaporization.
 
 * **🔒 End-to-End Encryption (E2EE)**  
   Every transmission is encrypted on-device before broadcast and decrypted only on the designated recipient's hardware using a pre-shared cryptographic key.
