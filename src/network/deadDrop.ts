@@ -29,8 +29,7 @@ export interface DeadDropSignal {
 // 🌐 GLOBAL CLOUDFLARE DEAD-DROP ENDPOINT CONFIGURATION
 // ============================================================================
 // Paste your deployed Cloudflare Worker URL here:
-// Example: 'https://spycom-dead-drop.your-account.workers.dev'
-export const CLOUDFLARE_WORKER_URL = '';
+export const CLOUDFLARE_WORKER_URL = 'https://spycomapp-relay.duzcanemre.workers.dev';
 
 let syncIntervalHandle: any = null;
 let lastSyncTimestamp = 0;
