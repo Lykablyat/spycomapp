@@ -203,6 +203,7 @@ export default {
           const payload = await request.json();
           const signalEntry = {
             type: payload.type,
+            msgId: payload.msgId || '',
             senderCallsign: payload.senderCallsign || '',
             senderClientId: payload.senderClientId || '',
             createdAt: Date.now(),

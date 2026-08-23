@@ -19,3 +19,7 @@ You are building a highly secure, 2-person private messaging app. The aesthetic 
 - **DO NOT build everything at once.** Wait for specific instructions to build layer by layer.
 - Ensure the app is fully functional offline before introducing the network relay layer.
 - Commit working code after every major feature using Conventional Commits.
+
+## Extra Notes Manually Written By Developer
+- Make it so that when a one time letter is recieved and burnt, there is a "burnt letter" message left behind for visual clarity. Also inform the sender when the letter is opened and when it is burned.
+- Make the Dream Room toggle unavailable when 2 people are not connected. It shouldn't be available in Lone or Offline mode, only in Com mode. When one user presses the Dream Room toggle, the other user should recieve an "invite" or a confirmation box and if confirmed the users access the dream room until one of them terminates it. 

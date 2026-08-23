@@ -23,6 +23,7 @@ export interface DeadDropEntry {
 
 export interface DeadDropSignal {
   type: string;
+  msgId?: string;
   senderCallsign?: string;
   senderClientId?: string;
   createdAt: number;
@@ -41,6 +42,7 @@ const MY_CLIENT_ID = 'client_' + Math.random().toString(36).substring(2, 10);
 let syncIntervalHandle: any = null;
 let lastSyncTimestamp = 0;
 const processedMessageIds = new Set<string>();
+const processedSignalIds = new Set<string>();
 
 export function getMyClientId(): string {
   return MY_CLIENT_ID;
@@ -173,12 +175,13 @@ export async function updatePresence(
 }
 
 /**
- * Broadcast an emergency or presence signal (Burn Notice / Duress Beacon / Peer Ping).
+ * Broadcast an emergency or tactical signal (Burn Notice / Duress / Letter Status / Dream Room).
  */
 export async function sendEmergencySignal(
   roomId: string,
-  signalType: 'burn_notice' | 'duress_signal' | 'peer_ping',
-  senderCallsign?: string
+  signalType: string,
+  senderCallsign?: string,
+  msgId?: string
 ): Promise<boolean> {
   try {
     const response = await deadDropFetch(`/api/signal/${roomId}`, {
@@ -186,6 +189,7 @@ export async function sendEmergencySignal(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         type: signalType,
+        msgId: msgId || '',
         senderCallsign: senderCallsign || '',
         senderClientId: MY_CLIENT_ID,
       }),
@@ -235,6 +239,7 @@ export function startLiveSync(
 ) {
   stopLiveSync();
   processedMessageIds.clear();
+  processedSignalIds.clear();
   lastPeerSeenTime = 0;
   lastPingTime = 0;
 
@@ -258,14 +263,18 @@ export function startLiveSync(
         sendEmergencySignal(roomId, 'peer_ping', myCallsign);
       }
 
-      // 2. Fetch recent signals (last 10s) to detect peer presence and alerts
-      const signals = await retrieveSignals(roomId, now - 10000);
+      // 2. Fetch recent signals (last 15s) to detect peer presence and alerts
+      const signals = await retrieveSignals(roomId, now - 15000);
       for (const sig of signals) {
         if (sig.senderClientId !== MY_CLIENT_ID) {
           if (sig.type === 'peer_ping') {
             lastPeerSeenTime = sig.createdAt || now;
-          } else if (sig.type === 'burn_notice' || sig.type === 'duress_signal') {
-            callbacks.onSignal(sig);
+          } else {
+            const sigKey = `${sig.type}_${sig.msgId || ''}_${sig.createdAt}`;
+            if (!processedSignalIds.has(sigKey)) {
+              processedSignalIds.add(sigKey);
+              callbacks.onSignal(sig);
+            }
           }
         }
       }
