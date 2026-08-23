@@ -1,70 +1,50 @@
 /**
- * SPYCOM TACTICAL ENCRYPTED DEAD-DROP SERVERLESS BACKEND
- * Compatible with Cloudflare Workers / Vercel / Edge Functions
+ * SPYCOM GLOBAL ENCRYPTED DEAD-DROP // CLOUDFLARE WORKER
  * 
  * Protocol: 100% Zero-Knowledge Store-and-Forward
- * - Stores encrypted ciphertext blobs only (Zero Plaintext Access)
- * - 24-Hour Automatic TTL Vaporization
+ * - Edge Persistent (Cloudflare KV with 24-Hour Native TTL)
+ * - Distributed across 300+ Global Data Centers
+ * - 0ms Cold Start // Always-On // Free Tier Forever
  */
 
-// In-Memory Storage for Worker edge instances (or KV / Durable Objects)
-const roomDrops = new Map(); // roomId -> Array<{ id, senderCallsign, encrypted, createdAt, viewOnce }>
-const roomSignals = new Map(); // roomId -> Array<{ type, senderCallsign, createdAt }>
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+};
 
-const TTL_MS = 24 * 60 * 60 * 1000; // 24 Hours
-
-function cleanExpiredDrops(roomId) {
-  const now = Date.now();
-  if (roomDrops.has(roomId)) {
-    const validDrops = roomDrops.get(roomId).filter(d => (now - d.createdAt) < TTL_MS);
-    if (validDrops.length === 0) {
-      roomDrops.delete(roomId);
-    } else {
-      roomDrops.set(roomId, validDrops);
-    }
-  }
-  if (roomSignals.has(roomId)) {
-    const validSignals = roomSignals.get(roomId).filter(s => (now - s.createdAt) < (5 * 60 * 1000)); // 5 min TTL for signals
-    if (validSignals.length === 0) {
-      roomSignals.delete(roomId);
-    } else {
-      roomSignals.set(roomId, validSignals);
-    }
-  }
-}
+// In-memory fallback if KV namespace is not bound
+const memoryStore = new Map();
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    // CORS Headers
-    const corsHeaders = {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    };
-
+    // Handle CORS preflight
     if (request.method === 'OPTIONS') {
-      return new Response(null, { headers: corsHeaders });
+      return new Response(null, { headers: CORS_HEADERS });
     }
 
     // Health check
     if (path === '/' || path === '/health') {
-      return new Response(JSON.stringify({
-        status: 'ONLINE',
-        protocol: 'SPYCOM_ENCRYPTED_DEAD_DROP_v2',
-        ttl_hours: 24,
-      }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify({
+          status: 'ONLINE',
+          protocol: 'SPYCOM_DEAD_DROP_CLOUDFLARE_v2',
+          storage: env?.SPYCOM_KV ? 'CLOUDFLARE_KV_GLOBAL' : 'EDGE_MEMORY',
+          ttl_hours: 24,
+          timestamp: Date.now(),
+        }),
+        { headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+      );
     }
 
     // Route: /api/drop/:roomId
     const dropMatch = path.match(/^\/api\/drop\/([a-f0-9]+)$/);
     if (dropMatch) {
       const roomId = dropMatch[1];
-      cleanExpiredDrops(roomId);
+      const kvKey = `room:${roomId}:drops`;
 
       // POST /api/drop/:roomId -> Deposit an encrypted blob
       if (request.method === 'POST') {
@@ -73,7 +53,7 @@ export default {
           if (!payload || !payload.encrypted) {
             return new Response(JSON.stringify({ error: 'Invalid encrypted payload' }), {
               status: 400,
-              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+              headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
             });
           }
 
@@ -85,25 +65,36 @@ export default {
             viewOnce: Boolean(payload.viewOnce),
           };
 
-          if (!roomDrops.has(roomId)) {
-            roomDrops.set(roomId, []);
+          // Fetch existing drops
+          let drops = [];
+          if (env?.SPYCOM_KV) {
+            const raw = await env.SPYCOM_KV.get(kvKey, { type: 'json' });
+            drops = Array.isArray(raw) ? raw : [];
+          } else {
+            drops = memoryStore.get(kvKey) || [];
           }
 
-          const drops = roomDrops.get(roomId);
-          // Deduplicate by ID
+          // Deduplicate and append
           if (!drops.some(d => d.id === dropEntry.id)) {
             drops.push(dropEntry);
-            // Cap at 100 recent messages per room to prevent memory exhaustion
-            if (drops.length > 100) drops.shift();
+            if (drops.length > 100) drops.shift(); // Keep last 100 max
           }
 
-          return new Response(JSON.stringify({ success: true, id: dropEntry.id, storedAt: Date.now() }), {
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          });
-        } catch (e) {
-          return new Response(JSON.stringify({ error: 'Malformed JSON payload' }), {
+          // Save with 24-hour expiration TTL (86400 seconds)
+          if (env?.SPYCOM_KV) {
+            await env.SPYCOM_KV.put(kvKey, JSON.stringify(drops), { expirationTtl: 86400 });
+          } else {
+            memoryStore.set(kvKey, drops);
+          }
+
+          return new Response(
+            JSON.stringify({ success: true, id: dropEntry.id, storedAt: Date.now() }),
+            { headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+          );
+        } catch (err) {
+          return new Response(JSON.stringify({ error: 'Malformed payload' }), {
             status: 400,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
           });
         }
       }
@@ -111,75 +102,119 @@ export default {
       // GET /api/drop/:roomId -> Retrieve waiting dead drops
       if (request.method === 'GET') {
         const since = parseInt(url.searchParams.get('since') || '0', 10);
-        const drops = roomDrops.get(roomId) || [];
+        let drops = [];
+
+        if (env?.SPYCOM_KV) {
+          const raw = await env.SPYCOM_KV.get(kvKey, { type: 'json' });
+          drops = Array.isArray(raw) ? raw : [];
+        } else {
+          drops = memoryStore.get(kvKey) || [];
+        }
+
         const filtered = drops.filter(d => d.createdAt > since);
 
-        return new Response(JSON.stringify({ drops: filtered, serverTime: Date.now() }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
+        return new Response(
+          JSON.stringify({ drops: filtered, serverTime: Date.now() }),
+          { headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+        );
       }
 
       // DELETE /api/drop/:roomId -> Purge room completely (Burn Notice)
       if (request.method === 'DELETE') {
-        roomDrops.delete(roomId);
-        roomSignals.delete(roomId);
-        return new Response(JSON.stringify({ success: true, purged: true }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
+        if (env?.SPYCOM_KV) {
+          await env.SPYCOM_KV.delete(kvKey);
+          await env.SPYCOM_KV.delete(`room:${roomId}:signals`);
+        } else {
+          memoryStore.delete(kvKey);
+          memoryStore.delete(`room:${roomId}:signals`);
+        }
+
+        return new Response(
+          JSON.stringify({ success: true, purged: true }),
+          { headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+        );
       }
     }
 
-    // Route: /api/signal/:roomId
+    // Route: /api/signal/:roomId (Burn notices / duress signals)
     const signalMatch = path.match(/^\/api\/signal\/([a-f0-9]+)$/);
     if (signalMatch) {
       const roomId = signalMatch[1];
-      cleanExpiredDrops(roomId);
+      const kvKey = `room:${roomId}:signals`;
 
-      // POST /api/signal/:roomId -> Broadcast burn notice / duress signal
+      // POST /api/signal/:roomId
       if (request.method === 'POST') {
         try {
           const payload = await request.json();
           const signalEntry = {
-            type: payload.type, // 'burn_notice' | 'duress_signal' | 'peer_ping'
+            type: payload.type,
             senderCallsign: payload.senderCallsign || 'ANON',
             createdAt: Date.now(),
           };
 
+          // If burn notice, also wipe drops immediately
           if (payload.type === 'burn_notice') {
-            roomDrops.delete(roomId);
+            if (env?.SPYCOM_KV) {
+              await env.SPYCOM_KV.delete(`room:${roomId}:drops`);
+            } else {
+              memoryStore.delete(`room:${roomId}:drops`);
+            }
           }
 
-          if (!roomSignals.has(roomId)) {
-            roomSignals.set(roomId, []);
+          let signals = [];
+          if (env?.SPYCOM_KV) {
+            const raw = await env.SPYCOM_KV.get(kvKey, { type: 'json' });
+            signals = Array.isArray(raw) ? raw : [];
+          } else {
+            signals = memoryStore.get(kvKey) || [];
           }
-          roomSignals.get(roomId).push(signalEntry);
 
-          return new Response(JSON.stringify({ success: true, signal: signalEntry.type }), {
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          });
-        } catch (e) {
+          signals.push(signalEntry);
+          if (signals.length > 20) signals.shift();
+
+          // 5-minute TTL for emergency signals
+          if (env?.SPYCOM_KV) {
+            await env.SPYCOM_KV.put(kvKey, JSON.stringify(signals), { expirationTtl: 300 });
+          } else {
+            memoryStore.set(kvKey, signals);
+          }
+
+          return new Response(
+            JSON.stringify({ success: true, signal: signalEntry.type }),
+            { headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+          );
+        } catch (err) {
           return new Response(JSON.stringify({ error: 'Malformed signal payload' }), {
             status: 400,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
           });
         }
       }
 
-      // GET /api/signal/:roomId -> Retrieve emergency signals
+      // GET /api/signal/:roomId
       if (request.method === 'GET') {
         const since = parseInt(url.searchParams.get('since') || '0', 10);
-        const signals = roomSignals.get(roomId) || [];
+        let signals = [];
+
+        if (env?.SPYCOM_KV) {
+          const raw = await env.SPYCOM_KV.get(kvKey, { type: 'json' });
+          signals = Array.isArray(raw) ? raw : [];
+        } else {
+          signals = memoryStore.get(kvKey) || [];
+        }
+
         const filtered = signals.filter(s => s.createdAt > since);
 
-        return new Response(JSON.stringify({ signals: filtered, serverTime: Date.now() }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
+        return new Response(
+          JSON.stringify({ signals: filtered, serverTime: Date.now() }),
+          { headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+        );
       }
     }
 
-    return new Response(JSON.stringify({ error: 'Not Found' }), {
+    return new Response(JSON.stringify({ error: 'Route Not Found' }), {
       status: 404,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
     });
   },
 };

@@ -1,0 +1,10 @@
+name = "spycom-dead-drop"
+main = "dead_drop_worker.js"
+compatibility_date = "2024-01-01"
+
+# To enable persistent global KV storage:
+# 1. Run: npx wrangler kv:namespace create SPYCOM_KV
+# 2. Paste the generated id below:
+# [[kv_namespaces]]
+# binding = "SPYCOM_KV"
+# id = "YOUR_KV_NAMESPACE_ID"

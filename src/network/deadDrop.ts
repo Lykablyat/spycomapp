@@ -25,59 +25,48 @@ export interface DeadDropSignal {
   createdAt: number;
 }
 
-// Dead Drop Endpoints (Auto-fallback)
-// 10.0.2.2 is the Android emulator gateway to host localhost:3000
-const CANDIDATE_ENDPOINTS = [
-  'http://10.0.2.2:3000',
-  'https://spycom-relay.onrender.com',
-];
+// ============================================================================
+// 🌐 GLOBAL CLOUDFLARE DEAD-DROP ENDPOINT CONFIGURATION
+// ============================================================================
+// Paste your deployed Cloudflare Worker URL here:
+// Example: 'https://spycom-dead-drop.your-account.workers.dev'
+export const CLOUDFLARE_WORKER_URL = '';
 
-let currentEndpoint = CANDIDATE_ENDPOINTS[0];
 let syncIntervalHandle: any = null;
 let lastSyncTimestamp = 0;
 const processedMessageIds = new Set<string>();
 
-export function setDeadDropEndpoint(url?: string) {
-  if (url && url.startsWith('http')) {
-    currentEndpoint = url.replace(/\/+$/, '');
-  } else {
-    currentEndpoint = CANDIDATE_ENDPOINTS[0];
-  }
-  console.log(`[DEAD-DROP] Active endpoint set to: ${currentEndpoint}`);
-}
-
 export function getDeadDropEndpoint(): string {
-  return currentEndpoint;
+  return (CLOUDFLARE_WORKER_URL || '').replace(/\/+$/, '');
 }
 
-// Resilient fetch with 3-second timeout and endpoint fallback
+/**
+ * Resilient fetch with a 5-second timeout to the global Cloudflare Edge.
+ */
 async function deadDropFetch(path: string, options: RequestInit = {}): Promise<Response> {
-  const endpointsToTry = [currentEndpoint, ...CANDIDATE_ENDPOINTS.filter(e => e !== currentEndpoint)];
-  let lastError: any = null;
-
-  for (const ep of endpointsToTry) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
-
-    try {
-      const url = `${ep}${path}`;
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      if (response.ok || response.status === 400 || response.status === 404) {
-        currentEndpoint = ep; // Stick with working endpoint
-        return response;
-      }
-    } catch (e) {
-      clearTimeout(timeoutId);
-      lastError = e;
-    }
+  const endpoint = getDeadDropEndpoint();
+  if (!endpoint) {
+    throw new Error('Cloudflare Worker URL is not configured.');
   }
 
-  throw lastError || new Error('All dead drop endpoints unreachable');
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+  try {
+    const url = `${endpoint}${path}`;
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      throw new Error('Network request timed out (5s)');
+    }
+    throw err;
+  }
 }
 
 /**
@@ -105,15 +94,15 @@ export async function depositMessage(
     });
 
     if (!response.ok) {
-      console.warn(`[DEAD-DROP] Server returned HTTP ${response.status} on deposit`);
+      console.warn(`[DEAD-DROP] Edge returned HTTP ${response.status} on deposit`);
       return false;
     }
 
     processedMessageIds.add(payload.id);
-    console.log(`[DEAD-DROP] Successfully deposited message ${payload.id} at endpoint ${currentEndpoint}`);
+    console.log(`[DEAD-DROP] Successfully deposited message ${payload.id}`);
     return true;
   } catch (err) {
-    console.error('[DEAD-DROP] Network error depositing message:', err);
+    console.error('[DEAD-DROP] Error depositing message:', err);
     return false;
   }
 }
@@ -205,7 +194,14 @@ export function startLiveSync(
   stopLiveSync();
   processedMessageIds.clear();
 
-  console.log(`[DEAD-DROP] Starting Live Sync for room: ${roomId}`);
+  const endpoint = getDeadDropEndpoint();
+  if (!endpoint) {
+    console.warn('[DEAD-DROP] Worker URL not set. Messages will queue locally.');
+    callbacks.onStatusChange(false);
+    return;
+  }
+
+  console.log(`[DEAD-DROP] Starting Live Sync for room: ${roomId} via ${endpoint}`);
   callbacks.onStatusChange(true);
 
   // Sync routine
@@ -239,7 +235,7 @@ export function startLiveSync(
     }
   };
 
-  // Immediate first fetch (fetches up to 24h past history from dead drop)
+  // Immediate first sweep
   performSync();
 
   // Active polling every 1.5 seconds while chat window is open
